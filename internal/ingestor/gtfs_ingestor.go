@@ -1,0 +1,98 @@
+package ingestor
+
+import (
+	"context"
+	"log/slog"
+	"sync"
+	"time"
+
+	"wabus/internal/store"
+	"wabus/pkg/gtfs"
+)
+
+type GTFSIngestor struct {
+	downloader     *gtfs.Downloader
+	parser         *gtfs.Parser
+	store          *store.GTFSStore
+	updateInterval time.Duration
+	logger         *slog.Logger
+
+	ready   bool
+	readyMu sync.RWMutex
+}
+
+func NewGTFSIngestor(url string, store *store.GTFSStore, updateInterval time.Duration, logger *slog.Logger) *GTFSIngestor {
+	return &GTFSIngestor{
+		downloader:     gtfs.NewDownloader(url),
+		parser:         gtfs.NewParser(),
+		store:          store,
+		updateInterval: updateInterval,
+		logger:         logger,
+	}
+}
+
+func (i *GTFSIngestor) Start(ctx context.Context) {
+	i.update(ctx)
+
+	ticker := time.NewTicker(i.updateInterval)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			i.update(ctx)
+		}
+	}
+}
+
+func (i *GTFSIngestor) update(ctx context.Context) {
+	i.logger.Info("starting GTFS update")
+	start := time.Now()
+
+	reader, _, err := i.downloader.Download(ctx)
+	if err != nil {
+		i.logger.Error("failed to download GTFS", "error", err)
+		return
+	}
+
+	downloadDuration := time.Since(start)
+	i.logger.Info("GTFS downloaded", "duration", downloadDuration)
+
+	parseStart := time.Now()
+	result, err := i.parser.Parse(reader)
+	if err != nil {
+		i.logger.Error("failed to parse GTFS", "error", err)
+		return
+	}
+
+	parseDuration := time.Since(parseStart)
+
+	i.store.UpdateAll(result.Routes, result.Shapes, result.Stops, result.RouteShapes)
+
+	if !i.IsReady() {
+		i.setReady(true)
+	}
+
+	i.logger.Info("GTFS update completed",
+		"download_duration", downloadDuration,
+		"parse_duration", parseDuration,
+		"total_duration", time.Since(start),
+		"routes", len(result.Routes),
+		"shapes", len(result.Shapes),
+		"stops", len(result.Stops),
+	)
+}
+
+func (i *GTFSIngestor) IsReady() bool {
+	i.readyMu.RLock()
+	defer i.readyMu.RUnlock()
+	return i.ready
+}
+
+func (i *GTFSIngestor) setReady(ready bool) {
+	i.readyMu.Lock()
+	defer i.readyMu.Unlock()
+	i.ready = ready
+}
