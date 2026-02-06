@@ -1,22 +1,27 @@
 package handler
 
 import (
+	"context"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"time"
 
+	"wabus/internal/cache"
 	"wabus/internal/domain"
 	"wabus/internal/store"
 )
 
 type GTFSHandler struct {
 	store  *store.GTFSStore
+	cache  *cache.RedisCache
 	logger *slog.Logger
 }
 
-func NewGTFSHandler(store *store.GTFSStore, logger *slog.Logger) *GTFSHandler {
+func NewGTFSHandler(store *store.GTFSStore, redisCache *cache.RedisCache, logger *slog.Logger) *GTFSHandler {
 	return &GTFSHandler{
 		store:  store,
+		cache:  redisCache,
 		logger: logger.With("handler", "gtfs"),
 	}
 }
@@ -248,6 +253,8 @@ func (h *GTFSHandler) GetStopSchedule(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var schedule []*domain.StopTime
+	cacheHit := false
+	ctx := r.Context()
 
 	if dateParam != "" {
 		var filterDate time.Time
@@ -255,20 +262,33 @@ func (h *GTFSHandler) GetStopSchedule(w http.ResponseWriter, r *http.Request) {
 
 		if dateParam == "today" {
 			filterDate = time.Now()
+			if h.tryGetFromCache(ctx, cache.KeyScheduleToday(id), &schedule) {
+				cacheHit = true
+				h.logger.Debug("GetStopSchedule cache hit", "stop_id", id, "key", "today")
+			}
+		} else if dateParam == "tomorrow" {
+			filterDate = time.Now().AddDate(0, 0, 1)
+			if h.tryGetFromCache(ctx, cache.KeyScheduleTomorrow(id), &schedule) {
+				cacheHit = true
+				h.logger.Debug("GetStopSchedule cache hit", "stop_id", id, "key", "tomorrow")
+			}
 		} else {
 			filterDate, err = time.Parse("2006-01-02", dateParam)
 			if err != nil {
 				h.logger.Warn("GetStopSchedule bad date format", "date", dateParam, "error", err)
-				respondError(w, http.StatusBadRequest, "invalid date format, use YYYY-MM-DD or 'today'")
+				respondError(w, http.StatusBadRequest, "invalid date format, use YYYY-MM-DD, 'today', or 'tomorrow'")
 				return
 			}
 		}
 
-		schedule = h.store.GetStopScheduleForDate(id, filterDate)
+		if !cacheHit {
+			schedule = h.store.GetStopScheduleForDate(id, filterDate)
+		}
 		h.logger.Debug("GetStopSchedule filtered by date",
 			"stop_id", id,
 			"date", filterDate.Format("2006-01-02"),
 			"weekday", filterDate.Weekday().String(),
+			"cache_hit", cacheHit,
 		)
 	} else {
 		schedule = h.store.GetStopSchedule(id)
@@ -319,7 +339,16 @@ func (h *GTFSHandler) GetStopLines(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	lines := h.store.GetStopLines(id)
+	var lines []*domain.StopLine
+	cacheHit := false
+	ctx := r.Context()
+
+	if h.tryGetFromCache(ctx, cache.KeyStopLines(id), &lines) {
+		cacheHit = true
+		h.logger.Debug("GetStopLines cache hit", "stop_id", id)
+	} else {
+		lines = h.store.GetStopLines(id)
+	}
 
 	lineNames := make([]string, len(lines))
 	for i, l := range lines {
@@ -331,6 +360,7 @@ func (h *GTFSHandler) GetStopLines(w http.ResponseWriter, r *http.Request) {
 		"stop_name", stop.Name,
 		"lines_count", len(lines),
 		"lines", lineNames,
+		"cache_hit", cacheHit,
 		"duration_ms", time.Since(start).Milliseconds(),
 	)
 
@@ -339,4 +369,116 @@ func (h *GTFSHandler) GetStopLines(w http.ResponseWriter, r *http.Request) {
 		Count:      len(lines),
 		ServerTime: time.Now(),
 	})
+}
+
+type SyncResponse struct {
+	Routes        []*domain.Route        `json:"routes"`
+	Stops         []*domain.Stop         `json:"stops"`
+	Calendars     []*domain.Calendar     `json:"calendars"`
+	CalendarDates []*domain.CalendarDate `json:"calendar_dates"`
+	Version       string                 `json:"version"`
+	GeneratedAt   time.Time              `json:"generated_at"`
+}
+
+func (h *GTFSHandler) GetSync(w http.ResponseWriter, r *http.Request) {
+	start := time.Now()
+	h.logger.Debug("GetSync request",
+		"method", r.Method,
+		"path", r.URL.Path,
+		"remote_addr", r.RemoteAddr,
+	)
+
+	stats := h.store.GetStats()
+	etag := fmt.Sprintf(`"%x"`, stats.LastUpdate.Unix())
+
+	if r.Header.Get("If-None-Match") == etag {
+		h.logger.Debug("GetSync not modified (ETag match)")
+		w.WriteHeader(http.StatusNotModified)
+		return
+	}
+
+	w.Header().Set("ETag", etag)
+	w.Header().Set("Cache-Control", "public, max-age=3600")
+
+	ctx := r.Context()
+
+	if h.cache != nil {
+		var syncData SyncResponse
+		found, err := h.cache.GetJSONCompressed(ctx, cache.KeySyncFull, &syncData)
+		if err == nil && found {
+			h.logger.Debug("GetSync cache hit", "duration_ms", time.Since(start).Milliseconds())
+			respondJSON(w, http.StatusOK, syncData)
+			return
+		}
+	}
+
+	calendars, calendarDates := h.store.GetCalendarsAndDates()
+
+	syncData := SyncResponse{
+		Routes:        h.store.GetAllRoutes(),
+		Stops:         h.store.GetAllStops(),
+		Calendars:     calendars,
+		CalendarDates: calendarDates,
+		Version:       stats.LastUpdate.Format("2006-01-02"),
+		GeneratedAt:   time.Now(),
+	}
+
+	h.logger.Debug("GetSync response",
+		"routes", len(syncData.Routes),
+		"stops", len(syncData.Stops),
+		"calendars", len(syncData.Calendars),
+		"calendar_dates", len(syncData.CalendarDates),
+		"duration_ms", time.Since(start).Milliseconds(),
+	)
+
+	respondJSON(w, http.StatusOK, syncData)
+}
+
+type SyncCheckResponse struct {
+	Version    string    `json:"version"`
+	HasUpdates bool      `json:"has_updates"`
+	LastUpdate time.Time `json:"last_update"`
+}
+
+func (h *GTFSHandler) CheckSync(w http.ResponseWriter, r *http.Request) {
+	start := time.Now()
+	sinceParam := r.URL.Query().Get("since")
+
+	h.logger.Debug("CheckSync request",
+		"method", r.Method,
+		"path", r.URL.Path,
+		"since", sinceParam,
+		"remote_addr", r.RemoteAddr,
+	)
+
+	stats := h.store.GetStats()
+	version := stats.LastUpdate.Format("2006-01-02")
+
+	hasUpdates := true
+	if sinceParam != "" {
+		sinceDate, err := time.Parse("2006-01-02", sinceParam)
+		if err == nil {
+			hasUpdates = stats.LastUpdate.After(sinceDate)
+		}
+	}
+
+	h.logger.Debug("CheckSync response",
+		"version", version,
+		"has_updates", hasUpdates,
+		"duration_ms", time.Since(start).Milliseconds(),
+	)
+
+	respondJSON(w, http.StatusOK, SyncCheckResponse{
+		Version:    version,
+		HasUpdates: hasUpdates,
+		LastUpdate: stats.LastUpdate,
+	})
+}
+
+func (h *GTFSHandler) tryGetFromCache(ctx context.Context, key string, dest interface{}) bool {
+	if h.cache == nil {
+		return false
+	}
+	found, err := h.cache.GetJSON(ctx, key, dest)
+	return err == nil && found
 }

@@ -8,6 +8,7 @@ import (
 	"os/signal"
 	"syscall"
 
+	"wabus/internal/cache"
 	"wabus/internal/config"
 	"wabus/internal/handler"
 	"wabus/internal/hub"
@@ -32,7 +33,21 @@ func main() {
 		"log_level", cfg.LogLevel.String(),
 		"http_addr", cfg.HTTPAddr,
 		"gtfs_enabled", cfg.GTFSEnabled,
+		"redis_enabled", cfg.RedisEnabled,
 	)
+
+	var redisCache *cache.RedisCache
+	if cfg.RedisEnabled {
+		var err error
+		redisCache, err = cache.NewRedisCache(cfg.RedisAddr, cfg.RedisPassword, cfg.RedisDB, logger)
+		if err != nil {
+			logger.Error("failed to connect to Redis", "error", err)
+			logger.Warn("continuing without Redis cache")
+			redisCache = nil
+		} else {
+			logger.Info("connected to Redis", "addr", cfg.RedisAddr)
+		}
+	}
 
 	vehicleStore := store.New(cfg.VehicleStaleAfter)
 	gtfsStore := store.NewGTFSStore()
@@ -41,14 +56,25 @@ func main() {
 	ing := ingestor.New(apiClient, vehicleStore, wsHub, cfg, logger)
 
 	var gtfsIng *ingestor.GTFSIngestor
+	var cacheWarmer *cache.CacheWarmer
 	if cfg.GTFSEnabled {
 		gtfsIng = ingestor.NewGTFSIngestor(cfg.GTFSURL, gtfsStore, cfg.GTFSUpdateInterval, logger)
+
+		if redisCache != nil {
+			cacheWarmer = cache.NewCacheWarmer(redisCache, gtfsStore, cfg.CacheTTL, logger)
+			gtfsIng.SetOnUpdate(func(ctx context.Context) {
+				logger.Info("GTFS data updated, warming cache")
+				if err := cacheWarmer.WarmAll(ctx); err != nil {
+					logger.Error("cache warming failed", "error", err)
+				}
+			})
+		}
 	}
 
 	httpHandler := handler.NewHTTPHandler(vehicleStore)
 	wsHandler := handler.NewWSHandler(wsHub, vehicleStore, logger)
 	healthHandler := handler.NewHealthHandler(ing, vehicleStore)
-	gtfsHandler := handler.NewGTFSHandler(gtfsStore, logger)
+	gtfsHandler := handler.NewGTFSHandler(gtfsStore, redisCache, logger)
 
 	mux := http.NewServeMux()
 
@@ -65,12 +91,15 @@ func main() {
 	mux.HandleFunc("GET /v1/stops/{id}/lines", gtfsHandler.GetStopLines)
 	mux.HandleFunc("GET /v1/gtfs/stats", gtfsHandler.GetStats)
 
+	mux.HandleFunc("GET /v1/sync", gtfsHandler.GetSync)
+	mux.HandleFunc("GET /v1/sync/check", gtfsHandler.CheckSync)
+
 	mux.HandleFunc("GET /healthz", healthHandler.Healthz)
 	mux.HandleFunc("GET /readyz", healthHandler.Readyz)
 
 	srv := &http.Server{
 		Addr:         cfg.HTTPAddr,
-		Handler:      mux,
+		Handler:      handler.CORSMiddleware(handler.GzipMiddleware(mux)),
 		ReadTimeout:  cfg.ReadTimeout,
 		WriteTimeout: cfg.WriteTimeout,
 	}
@@ -84,6 +113,10 @@ func main() {
 
 	if gtfsIng != nil {
 		go gtfsIng.Start(ctx)
+	}
+
+	if cacheWarmer != nil {
+		go cacheWarmer.ScheduleMidnightRefresh(ctx)
 	}
 
 	go func() {
@@ -107,6 +140,12 @@ func main() {
 
 	if err := srv.Shutdown(shutdownCtx); err != nil {
 		logger.Error("HTTP server shutdown error", "error", err)
+	}
+
+	if redisCache != nil {
+		if err := redisCache.Close(); err != nil {
+			logger.Error("Redis close error", "error", err)
+		}
 	}
 
 	logger.Info("shutdown complete")

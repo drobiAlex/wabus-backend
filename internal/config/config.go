@@ -27,6 +27,13 @@ type Config struct {
 	GTFSEnabled        bool
 	GTFSURL            string
 	GTFSUpdateInterval time.Duration
+
+	RedisEnabled     bool
+	RedisAddr        string
+	RedisPassword    string
+	RedisDB          int
+	CacheTTL         time.Duration
+	CacheWarmOnStart bool
 }
 
 func Load() (*Config, error) {
@@ -53,6 +60,13 @@ func Load() (*Config, error) {
 		GTFSEnabled:        getBoolEnv("GTFS_ENABLED", true),
 		GTFSURL:            getEnv("GTFS_URL", "https://mkuran.pl/gtfs/warsaw.zip"),
 		GTFSUpdateInterval: getDurationEnv("GTFS_UPDATE_INTERVAL", 24*time.Hour),
+
+		RedisEnabled:     getBoolEnv("REDIS_ENABLED", false),
+		RedisAddr:        getEnv("REDIS_ADDR", "localhost:6379"),
+		RedisPassword:    getEnv("REDIS_PASSWORD", ""),
+		RedisDB:          getIntEnv("REDIS_DB", 0),
+		CacheTTL:         getDurationEnv("CACHE_TTL", 24*time.Hour),
+		CacheWarmOnStart: getBoolEnv("CACHE_WARM_ON_START", true),
 	}, nil
 }
 

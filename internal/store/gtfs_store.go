@@ -271,3 +271,24 @@ func (s *GTFSStore) GetStats() GTFSStats {
 		IsLoaded:    !s.lastUpdate.IsZero(),
 	}
 }
+
+func (s *GTFSStore) GetCalendarsAndDates() ([]*domain.Calendar, []*domain.CalendarDate) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	calendars := make([]*domain.Calendar, 0, len(s.calendars))
+	for _, cal := range s.calendars {
+		copy := *cal
+		calendars = append(calendars, &copy)
+	}
+
+	var calendarDates []*domain.CalendarDate
+	for _, dates := range s.calendarDates {
+		for _, cd := range dates {
+			copy := *cd
+			calendarDates = append(calendarDates, &copy)
+		}
+	}
+
+	return calendars, calendarDates
+}

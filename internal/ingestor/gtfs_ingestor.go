@@ -16,6 +16,7 @@ type GTFSIngestor struct {
 	store          *store.GTFSStore
 	updateInterval time.Duration
 	logger         *slog.Logger
+	onUpdate       func(context.Context)
 
 	ready   bool
 	readyMu sync.RWMutex
@@ -76,6 +77,10 @@ func (i *GTFSIngestor) update(ctx context.Context) {
 		i.setReady(true)
 	}
 
+	if i.onUpdate != nil {
+		i.onUpdate(ctx)
+	}
+
 	i.logger.Info("GTFS update completed",
 		"download_duration", downloadDuration,
 		"parse_duration", parseDuration,
@@ -98,4 +103,8 @@ func (i *GTFSIngestor) setReady(ready bool) {
 	i.readyMu.Lock()
 	defer i.readyMu.Unlock()
 	i.ready = ready
+}
+
+func (i *GTFSIngestor) SetOnUpdate(fn func(context.Context)) {
+	i.onUpdate = fn
 }
