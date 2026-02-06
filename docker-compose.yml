@@ -1,0 +1,44 @@
+services:
+  wabus:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    ports:
+      - "8080:8080"
+    environment:
+      - WARSAW_API_KEY=${WARSAW_API_KEY}
+      - WARSAW_API_URL=${WARSAW_API_URL:-https://api.um.warszawa.pl/api/action/busestrams_get}
+      - WARSAW_RESOURCE_ID=${WARSAW_RESOURCE_ID:-f2e5503e-927d-4ad3-9500-4ab9e55deb59}
+      - HTTP_ADDR=:8080
+      - LOG_LEVEL=${LOG_LEVEL:-info}
+      - POLL_INTERVAL=${POLL_INTERVAL:-10s}
+      - VEHICLE_STALE_AFTER=${VEHICLE_STALE_AFTER:-5m}
+      - GTFS_ENABLED=${GTFS_ENABLED:-true}
+      - GTFS_URL=${GTFS_URL:-https://mkuran.pl/gtfs/warsaw.zip}
+      - GTFS_UPDATE_INTERVAL=${GTFS_UPDATE_INTERVAL:-24h}
+      - REDIS_URL=redis://redis:6379
+    depends_on:
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:8080/healthz"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis-data:/data
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+volumes:
+  redis-data:
