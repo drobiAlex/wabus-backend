@@ -7,12 +7,14 @@ import (
 	"os"
 	"os/signal"
 	"syscall"
+	"time"
 
 	"wabus/internal/cache"
 	"wabus/internal/config"
 	"wabus/internal/handler"
 	"wabus/internal/hub"
 	"wabus/internal/ingestor"
+	"wabus/internal/middleware"
 	"wabus/internal/store"
 	"wabus/pkg/warsawapi"
 )
@@ -75,6 +77,10 @@ func main() {
 	wsHandler := handler.NewWSHandler(wsHub, vehicleStore, logger)
 	healthHandler := handler.NewHealthHandler(ing, vehicleStore)
 	gtfsHandler := handler.NewGTFSHandler(gtfsStore, redisCache, logger)
+	statsHandler := handler.NewStatsHandler(vehicleStore, gtfsStore)
+
+	// Rate limiter: 120 requests per minute per IP
+	rateLimiter := middleware.NewRateLimiter(120, time.Minute, logger)
 
 	mux := http.NewServeMux()
 
@@ -85,6 +91,7 @@ func main() {
 	mux.HandleFunc("GET /v1/routes", gtfsHandler.ListRoutes)
 	mux.HandleFunc("GET /v1/routes/{line}", gtfsHandler.GetRoute)
 	mux.HandleFunc("GET /v1/routes/{line}/shape", gtfsHandler.GetRouteShape)
+	mux.HandleFunc("GET /v1/routes/{line}/stops", gtfsHandler.GetRouteStops)
 	mux.HandleFunc("GET /v1/stops", gtfsHandler.ListStops)
 	mux.HandleFunc("GET /v1/stops/{id}", gtfsHandler.GetStop)
 	mux.HandleFunc("GET /v1/stops/{id}/schedule", gtfsHandler.GetStopSchedule)
@@ -96,10 +103,18 @@ func main() {
 
 	mux.HandleFunc("GET /healthz", healthHandler.Healthz)
 	mux.HandleFunc("GET /readyz", healthHandler.Readyz)
+	mux.HandleFunc("GET /stats", statsHandler.GetStats)
+
+	// Apply middleware chain: CORS -> Gzip -> RateLimit -> Handler
+	finalHandler := handler.CORSMiddleware(
+		handler.GzipMiddleware(
+			rateLimiter.Middleware(mux),
+		),
+	)
 
 	srv := &http.Server{
 		Addr:         cfg.HTTPAddr,
-		Handler:      handler.CORSMiddleware(handler.GzipMiddleware(mux)),
+		Handler:      finalHandler,
 		ReadTimeout:  cfg.ReadTimeout,
 		WriteTimeout: cfg.WriteTimeout,
 	}

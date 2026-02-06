@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"sort"
 	"strconv"
+	"strings"
 	"time"
 
 	"wabus/internal/domain"
@@ -21,14 +22,17 @@ type ParseResult struct {
 
 	StopSchedules map[string][]*domain.StopTime   // stop_id -> []StopTime
 	StopLines     map[string][]*domain.StopLine   // stop_id -> []StopLine
-	Trips         map[string]*TripInfo            // trip_id -> TripInfo (internal)
-	Calendars     map[string]*domain.Calendar     // service_id -> Calendar
-	CalendarDates map[string][]*domain.CalendarDate // service_id -> []CalendarDate
+	RouteStops     map[string][]*domain.Stop            // route_id -> []Stop (ordered)
+	RouteTripTimes map[string][]*domain.TripTimeEntry  // route_id -> []TripTimeEntry
+	Trips          map[string]*TripInfo                // trip_id -> TripInfo (internal)
+	Calendars      map[string]*domain.Calendar         // service_id -> Calendar
+	CalendarDates  map[string][]*domain.CalendarDate   // service_id -> []CalendarDate
 }
 
 type TripInfo struct {
 	RouteID   string
 	ServiceID string
+	ShapeID   string
 	Headsign  string
 }
 
@@ -53,9 +57,11 @@ func (p *Parser) Parse(reader *zip.Reader) (*ParseResult, error) {
 		RouteShapes:   make(map[string][]string),
 		StopSchedules: make(map[string][]*domain.StopTime),
 		StopLines:     make(map[string][]*domain.StopLine),
-		Trips:         make(map[string]*TripInfo),
-		Calendars:     make(map[string]*domain.Calendar),
-		CalendarDates: make(map[string][]*domain.CalendarDate),
+		RouteStops:     make(map[string][]*domain.Stop),
+		RouteTripTimes: make(map[string][]*domain.TripTimeEntry),
+		Trips:          make(map[string]*TripInfo),
+		Calendars:      make(map[string]*domain.Calendar),
+		CalendarDates:  make(map[string][]*domain.CalendarDate),
 	}
 
 	fileMap := make(map[string]*zip.File)
@@ -173,6 +179,27 @@ func (p *Parser) Parse(reader *zip.Reader) (*ParseResult, error) {
 	p.buildStopLines(result)
 	p.logger.Info("built stop lines index",
 		"stops_with_lines", len(result.StopLines),
+		"duration_ms", time.Since(start).Milliseconds(),
+	)
+
+	start = time.Now()
+	p.logger.Debug("building route stops index")
+	p.buildRouteStops(result)
+	p.logger.Info("built route stops index",
+		"routes_with_stops", len(result.RouteStops),
+		"duration_ms", time.Since(start).Milliseconds(),
+	)
+
+	start = time.Now()
+	p.logger.Debug("building trip time ranges")
+	p.buildTripTimeRanges(result)
+	totalEntries := 0
+	for _, entries := range result.RouteTripTimes {
+		totalEntries += len(entries)
+	}
+	p.logger.Info("built trip time ranges",
+		"routes_with_times", len(result.RouteTripTimes),
+		"total_entries", totalEntries,
 		"duration_ms", time.Since(start).Milliseconds(),
 	)
 
@@ -364,6 +391,7 @@ func (p *Parser) parseTrips(file *zip.File, result *ParseResult) error {
 			result.Trips[tripID] = &TripInfo{
 				RouteID:   routeID,
 				ServiceID: serviceID,
+				ShapeID:   shapeID,
 				Headsign:  headsign,
 			}
 		}
@@ -571,6 +599,103 @@ func (p *Parser) buildStopLines(result *ParseResult) {
 
 		result.StopLines[stopID] = lines
 	}
+}
+
+func (p *Parser) buildRouteStops(result *ParseResult) {
+	// Collect unique stop IDs per route, tracking the lowest stop_sequence per stop
+	type stopEntry struct {
+		stopID   string
+		minSeq   int
+	}
+	routeStopMap := make(map[string]map[string]*stopEntry) // route_id -> stop_id -> entry
+
+	for stopID, stopTimes := range result.StopSchedules {
+		for _, st := range stopTimes {
+			if _, ok := routeStopMap[st.RouteID]; !ok {
+				routeStopMap[st.RouteID] = make(map[string]*stopEntry)
+			}
+			existing, exists := routeStopMap[st.RouteID][stopID]
+			if !exists || st.StopSequence < existing.minSeq {
+				routeStopMap[st.RouteID][stopID] = &stopEntry{stopID: stopID, minSeq: st.StopSequence}
+			}
+		}
+	}
+
+	for routeID, stopMap := range routeStopMap {
+		entries := make([]*stopEntry, 0, len(stopMap))
+		for _, e := range stopMap {
+			entries = append(entries, e)
+		}
+		sort.Slice(entries, func(i, j int) bool {
+			return entries[i].minSeq < entries[j].minSeq
+		})
+
+		stops := make([]*domain.Stop, 0, len(entries))
+		for _, e := range entries {
+			if stop, ok := result.Stops[e.stopID]; ok {
+				stopCopy := *stop
+				stops = append(stops, &stopCopy)
+			}
+		}
+		result.RouteStops[routeID] = stops
+	}
+}
+
+func (p *Parser) buildTripTimeRanges(result *ParseResult) {
+	// Build per-trip time ranges from stop schedules
+	type timeRange struct {
+		minTime int
+		maxTime int
+	}
+	tripTimes := make(map[string]*timeRange)
+
+	for _, stopTimes := range result.StopSchedules {
+		for _, st := range stopTimes {
+			dep := parseGTFSTimeToMinutes(st.DepartureTime)
+			arr := parseGTFSTimeToMinutes(st.ArrivalTime)
+
+			if tr, ok := tripTimes[st.TripID]; ok {
+				if dep < tr.minTime {
+					tr.minTime = dep
+				}
+				if arr > tr.maxTime {
+					tr.maxTime = arr
+				}
+			} else {
+				tripTimes[st.TripID] = &timeRange{minTime: dep, maxTime: arr}
+			}
+		}
+	}
+
+	// Map trips to route -> [{shape, service, start, end}]
+	for tripID, trip := range result.Trips {
+		if trip.ShapeID == "" {
+			continue
+		}
+		tr, ok := tripTimes[tripID]
+		if !ok {
+			continue
+		}
+
+		entry := &domain.TripTimeEntry{
+			ShapeID:      trip.ShapeID,
+			ServiceID:    trip.ServiceID,
+			StartMinutes: tr.minTime,
+			EndMinutes:   tr.maxTime,
+		}
+
+		result.RouteTripTimes[trip.RouteID] = append(result.RouteTripTimes[trip.RouteID], entry)
+	}
+}
+
+func parseGTFSTimeToMinutes(timeStr string) int {
+	parts := strings.Split(timeStr, ":")
+	if len(parts) < 2 {
+		return 0
+	}
+	hours, _ := strconv.Atoi(parts[0])
+	minutes, _ := strconv.Atoi(parts[1])
+	return hours*60 + minutes
 }
 
 func makeIndex(header []string) map[string]int {

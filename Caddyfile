@@ -1,0 +1,21 @@
+# Replace api.wabus.app with your domain
+api.wabus.app {
+    # Reverse proxy to wabus backend
+    reverse_proxy wabus:8080
+
+    # Enable compression
+    encode gzip
+
+    # Logging
+    log {
+        output stdout
+        format json
+    }
+
+    # Security headers
+    header {
+        X-Content-Type-Options nosniff
+        X-Frame-Options DENY
+        Referrer-Policy strict-origin-when-cross-origin
+    }
+}

@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"strconv"
+	"strings"
 	"time"
 
 	"wabus/internal/cache"
@@ -117,7 +119,20 @@ func (h *GTFSHandler) GetRouteShape(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	shapes := h.store.GetRouteShapes(route.ID)
+	timeParam := r.URL.Query().Get("time")
+
+	var shapes []*domain.Shape
+	if timeParam != "" {
+		timeMinutes := parseTimeToMinutes(timeParam)
+		shapes = h.store.GetActiveRouteShapes(route.ID, time.Now(), timeMinutes)
+		h.logger.Debug("GetRouteShape filtered by time",
+			"line", line,
+			"time_param", timeParam,
+			"time_minutes", timeMinutes,
+		)
+	} else {
+		shapes = h.store.GetRouteShapes(route.ID)
+	}
 
 	totalPoints := 0
 	for _, s := range shapes {
@@ -128,12 +143,58 @@ func (h *GTFSHandler) GetRouteShape(w http.ResponseWriter, r *http.Request) {
 		"line", line,
 		"shapes_count", len(shapes),
 		"total_points", totalPoints,
+		"time_filtered", timeParam != "",
 		"duration_ms", time.Since(start).Milliseconds(),
 	)
 
 	respondJSON(w, http.StatusOK, ShapesResponse{
 		Shapes:     shapes,
 		Count:      len(shapes),
+		ServerTime: time.Now(),
+	})
+}
+
+type RouteStopsResponse struct {
+	Stops      []*domain.Stop `json:"stops"`
+	Count      int            `json:"count"`
+	ServerTime time.Time      `json:"server_time"`
+}
+
+func (h *GTFSHandler) GetRouteStops(w http.ResponseWriter, r *http.Request) {
+	start := time.Now()
+	line := r.PathValue("line")
+
+	h.logger.Debug("GetRouteStops request",
+		"method", r.Method,
+		"path", r.URL.Path,
+		"line", line,
+		"remote_addr", r.RemoteAddr,
+	)
+
+	if line == "" {
+		h.logger.Warn("GetRouteStops bad request", "error", "missing line parameter")
+		respondError(w, http.StatusBadRequest, "missing line parameter")
+		return
+	}
+
+	route, ok := h.store.GetRouteByLine(line)
+	if !ok {
+		h.logger.Debug("GetRouteStops route not found", "line", line)
+		respondError(w, http.StatusNotFound, "route not found")
+		return
+	}
+
+	stops := h.store.GetRouteStops(route.ID)
+
+	h.logger.Debug("GetRouteStops response",
+		"line", line,
+		"stops_count", len(stops),
+		"duration_ms", time.Since(start).Milliseconds(),
+	)
+
+	respondJSON(w, http.StatusOK, RouteStopsResponse{
+		Stops:      stops,
+		Count:      len(stops),
 		ServerTime: time.Now(),
 	})
 }
@@ -389,6 +450,14 @@ func (h *GTFSHandler) GetSync(w http.ResponseWriter, r *http.Request) {
 	)
 
 	stats := h.store.GetStats()
+
+	// Return 503 if GTFS data is not loaded yet
+	if !stats.IsLoaded {
+		h.logger.Warn("GetSync called but GTFS data not loaded yet")
+		w.Header().Set("Retry-After", "30")
+		respondError(w, http.StatusServiceUnavailable, "GTFS data is loading, please retry")
+		return
+	}
 	etag := fmt.Sprintf(`"%x"`, stats.LastUpdate.Unix())
 
 	if r.Header.Get("If-None-Match") == etag {
@@ -452,6 +521,15 @@ func (h *GTFSHandler) CheckSync(w http.ResponseWriter, r *http.Request) {
 	)
 
 	stats := h.store.GetStats()
+
+	// Return 503 if GTFS data is not loaded yet
+	if !stats.IsLoaded {
+		h.logger.Warn("CheckSync called but GTFS data not loaded yet")
+		w.Header().Set("Retry-After", "30")
+		respondError(w, http.StatusServiceUnavailable, "GTFS data is loading, please retry")
+		return
+	}
+
 	version := stats.LastUpdate.Format("2006-01-02")
 
 	hasUpdates := true
@@ -481,4 +559,19 @@ func (h *GTFSHandler) tryGetFromCache(ctx context.Context, key string, dest inte
 	}
 	found, err := h.cache.GetJSON(ctx, key, dest)
 	return err == nil && found
+}
+
+// parseTimeToMinutes parses "HH:MM" or "now" to minutes since midnight.
+func parseTimeToMinutes(s string) int {
+	if s == "now" {
+		now := time.Now()
+		return now.Hour()*60 + now.Minute()
+	}
+	parts := strings.Split(s, ":")
+	if len(parts) < 2 {
+		return 0
+	}
+	hours, _ := strconv.Atoi(parts[0])
+	minutes, _ := strconv.Atoi(parts[1])
+	return hours*60 + minutes
 }

@@ -158,6 +158,14 @@ func (s *Store) Count() int {
 	return len(s.vehicles)
 }
 
+func (s *Store) CountByType() (buses int, trams int) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	buses = len(s.byType[domain.VehicleTypeBus])
+	trams = len(s.byType[domain.VehicleTypeTram])
+	return
+}
+
 func (s *Store) getCandidates(opts ListOptions) map[string]struct{} {
 	if opts.Type != nil && opts.Line != "" {
 		return s.intersect(s.byType[*opts.Type], s.byLine[opts.Line])

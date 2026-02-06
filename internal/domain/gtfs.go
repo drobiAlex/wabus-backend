@@ -103,6 +103,14 @@ type CalendarDate struct {
 	ExceptionType int    // 1 = added, 2 = removed
 }
 
+// TripTimeEntry stores the shape and time range for a trip on a route
+type TripTimeEntry struct {
+	ShapeID      string
+	ServiceID    string
+	StartMinutes int // minutes since midnight (GTFS format, can be >1440)
+	EndMinutes   int // minutes since midnight
+}
+
 // StopLine represents a line that serves a stop
 type StopLine struct {
 	RouteID   string    `json:"route_id"`
