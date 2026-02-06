@@ -224,11 +224,13 @@ type StopScheduleResponse struct {
 func (h *GTFSHandler) GetStopSchedule(w http.ResponseWriter, r *http.Request) {
 	start := time.Now()
 	id := r.PathValue("id")
+	dateParam := r.URL.Query().Get("date")
 
 	h.logger.Debug("GetStopSchedule request",
 		"method", r.Method,
 		"path", r.URL.Path,
 		"stop_id", id,
+		"date", dateParam,
 		"remote_addr", r.RemoteAddr,
 	)
 
@@ -245,12 +247,38 @@ func (h *GTFSHandler) GetStopSchedule(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	schedule := h.store.GetStopSchedule(id)
+	var schedule []*domain.StopTime
+
+	if dateParam != "" {
+		var filterDate time.Time
+		var err error
+
+		if dateParam == "today" {
+			filterDate = time.Now()
+		} else {
+			filterDate, err = time.Parse("2006-01-02", dateParam)
+			if err != nil {
+				h.logger.Warn("GetStopSchedule bad date format", "date", dateParam, "error", err)
+				respondError(w, http.StatusBadRequest, "invalid date format, use YYYY-MM-DD or 'today'")
+				return
+			}
+		}
+
+		schedule = h.store.GetStopScheduleForDate(id, filterDate)
+		h.logger.Debug("GetStopSchedule filtered by date",
+			"stop_id", id,
+			"date", filterDate.Format("2006-01-02"),
+			"weekday", filterDate.Weekday().String(),
+		)
+	} else {
+		schedule = h.store.GetStopSchedule(id)
+	}
 
 	h.logger.Debug("GetStopSchedule response",
 		"stop_id", id,
 		"stop_name", stop.Name,
 		"schedule_count", len(schedule),
+		"filtered_by_date", dateParam != "",
 		"duration_ms", time.Since(start).Milliseconds(),
 	)
 

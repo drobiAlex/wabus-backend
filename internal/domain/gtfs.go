@@ -74,11 +74,33 @@ type Stop struct {
 type StopTime struct {
 	TripID        string `json:"trip_id"`
 	RouteID       string `json:"route_id"`
+	ServiceID     string `json:"-"` // Used for filtering, not exposed in API
 	Line          string `json:"line"`
 	Headsign      string `json:"headsign"`
 	ArrivalTime   string `json:"arrival_time"`
 	DepartureTime string `json:"departure_time"`
 	StopSequence  int    `json:"stop_sequence"`
+}
+
+// Calendar represents service availability by day of week
+type Calendar struct {
+	ServiceID string
+	Monday    bool
+	Tuesday   bool
+	Wednesday bool
+	Thursday  bool
+	Friday    bool
+	Saturday  bool
+	Sunday    bool
+	StartDate string // YYYYMMDD
+	EndDate   string // YYYYMMDD
+}
+
+// CalendarDate represents service exceptions
+type CalendarDate struct {
+	ServiceID     string
+	Date          string // YYYYMMDD
+	ExceptionType int    // 1 = added, 2 = removed
 }
 
 // StopLine represents a line that serves a stop

@@ -16,6 +16,8 @@ type GTFSStore struct {
 	stops        map[string]*domain.Stop
 	stopSchedules map[string][]*domain.StopTime
 	stopLines     map[string][]*domain.StopLine
+	calendars     map[string]*domain.Calendar
+	calendarDates map[string][]*domain.CalendarDate
 
 	lastUpdate time.Time
 }
@@ -29,10 +31,12 @@ func NewGTFSStore() *GTFSStore {
 		stops:         make(map[string]*domain.Stop),
 		stopSchedules: make(map[string][]*domain.StopTime),
 		stopLines:     make(map[string][]*domain.StopLine),
+		calendars:     make(map[string]*domain.Calendar),
+		calendarDates: make(map[string][]*domain.CalendarDate),
 	}
 }
 
-func (s *GTFSStore) UpdateAll(routes map[string]*domain.Route, shapes map[string]*domain.Shape, stops map[string]*domain.Stop, routeShapes map[string][]string, stopSchedules map[string][]*domain.StopTime, stopLines map[string][]*domain.StopLine) {
+func (s *GTFSStore) UpdateAll(routes map[string]*domain.Route, shapes map[string]*domain.Shape, stops map[string]*domain.Stop, routeShapes map[string][]string, stopSchedules map[string][]*domain.StopTime, stopLines map[string][]*domain.StopLine, calendars map[string]*domain.Calendar, calendarDates map[string][]*domain.CalendarDate) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -42,6 +46,8 @@ func (s *GTFSStore) UpdateAll(routes map[string]*domain.Route, shapes map[string
 	s.routeShapes = routeShapes
 	s.stopSchedules = stopSchedules
 	s.stopLines = stopLines
+	s.calendars = calendars
+	s.calendarDates = calendarDates
 	s.lastUpdate = time.Now()
 
 	s.routesByLine = make(map[string]*domain.Route, len(routes))
@@ -148,6 +154,76 @@ func (s *GTFSStore) GetStopSchedule(stopID string) []*domain.StopTime {
 		result[i] = &copy
 	}
 	return result
+}
+
+func (s *GTFSStore) GetStopScheduleForDate(stopID string, date time.Time) []*domain.StopTime {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	schedule, ok := s.stopSchedules[stopID]
+	if !ok {
+		return nil
+	}
+
+	dateStr := date.Format("20060102")
+	weekday := date.Weekday()
+
+	activeServices := s.getActiveServices(dateStr, weekday)
+
+	var result []*domain.StopTime
+	for _, st := range schedule {
+		if activeServices[st.ServiceID] {
+			copy := *st
+			result = append(result, &copy)
+		}
+	}
+	return result
+}
+
+func (s *GTFSStore) getActiveServices(dateStr string, weekday time.Weekday) map[string]bool {
+	active := make(map[string]bool)
+
+	for serviceID, cal := range s.calendars {
+		if dateStr < cal.StartDate || dateStr > cal.EndDate {
+			continue
+		}
+
+		isActive := false
+		switch weekday {
+		case time.Monday:
+			isActive = cal.Monday
+		case time.Tuesday:
+			isActive = cal.Tuesday
+		case time.Wednesday:
+			isActive = cal.Wednesday
+		case time.Thursday:
+			isActive = cal.Thursday
+		case time.Friday:
+			isActive = cal.Friday
+		case time.Saturday:
+			isActive = cal.Saturday
+		case time.Sunday:
+			isActive = cal.Sunday
+		}
+
+		if isActive {
+			active[serviceID] = true
+		}
+	}
+
+	for serviceID, dates := range s.calendarDates {
+		for _, cd := range dates {
+			if cd.Date == dateStr {
+				if cd.ExceptionType == 1 {
+					active[serviceID] = true
+				} else if cd.ExceptionType == 2 {
+					delete(active, serviceID)
+				}
+			}
+		}
+	}
+
+	return active
 }
 
 func (s *GTFSStore) GetStopLines(stopID string) []*domain.StopLine {

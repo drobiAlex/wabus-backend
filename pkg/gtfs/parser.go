@@ -19,14 +19,17 @@ type ParseResult struct {
 	Stops       map[string]*domain.Stop
 	RouteShapes map[string][]string // route_id -> []shape_id
 
-	StopSchedules map[string][]*domain.StopTime // stop_id -> []StopTime
-	StopLines     map[string][]*domain.StopLine // stop_id -> []StopLine
-	Trips         map[string]*TripInfo          // trip_id -> TripInfo (internal)
+	StopSchedules map[string][]*domain.StopTime   // stop_id -> []StopTime
+	StopLines     map[string][]*domain.StopLine   // stop_id -> []StopLine
+	Trips         map[string]*TripInfo            // trip_id -> TripInfo (internal)
+	Calendars     map[string]*domain.Calendar     // service_id -> Calendar
+	CalendarDates map[string][]*domain.CalendarDate // service_id -> []CalendarDate
 }
 
 type TripInfo struct {
-	RouteID  string
-	Headsign string
+	RouteID   string
+	ServiceID string
+	Headsign  string
 }
 
 type Parser struct {
@@ -51,6 +54,8 @@ func (p *Parser) Parse(reader *zip.Reader) (*ParseResult, error) {
 		StopSchedules: make(map[string][]*domain.StopTime),
 		StopLines:     make(map[string][]*domain.StopLine),
 		Trips:         make(map[string]*TripInfo),
+		Calendars:     make(map[string]*domain.Calendar),
+		CalendarDates: make(map[string][]*domain.CalendarDate),
 	}
 
 	fileMap := make(map[string]*zip.File)
@@ -113,6 +118,35 @@ func (p *Parser) Parse(reader *zip.Reader) (*ParseResult, error) {
 		p.logger.Info("parsed trips.txt",
 			"trips_count", len(result.Trips),
 			"route_shapes_count", len(result.RouteShapes),
+			"duration_ms", time.Since(start).Milliseconds(),
+		)
+	}
+
+	if file, ok := fileMap["calendar.txt"]; ok {
+		start := time.Now()
+		p.logger.Debug("parsing calendar.txt")
+		if err := p.parseCalendar(file, result); err != nil {
+			return nil, fmt.Errorf("parse calendar: %w", err)
+		}
+		p.logger.Info("parsed calendar.txt",
+			"services_count", len(result.Calendars),
+			"duration_ms", time.Since(start).Milliseconds(),
+		)
+	}
+
+	if file, ok := fileMap["calendar_dates.txt"]; ok {
+		start := time.Now()
+		p.logger.Debug("parsing calendar_dates.txt")
+		if err := p.parseCalendarDates(file, result); err != nil {
+			return nil, fmt.Errorf("parse calendar_dates: %w", err)
+		}
+		totalExceptions := 0
+		for _, dates := range result.CalendarDates {
+			totalExceptions += len(dates)
+		}
+		p.logger.Info("parsed calendar_dates.txt",
+			"services_with_exceptions", len(result.CalendarDates),
+			"total_exceptions", totalExceptions,
 			"duration_ms", time.Since(start).Milliseconds(),
 		)
 	}
@@ -322,13 +356,15 @@ func (p *Parser) parseTrips(file *zip.File, result *ParseResult) error {
 
 		tripID := getField(record, idx, "trip_id")
 		routeID := getField(record, idx, "route_id")
+		serviceID := getField(record, idx, "service_id")
 		shapeID := getField(record, idx, "shape_id")
 		headsign := getField(record, idx, "trip_headsign")
 
 		if tripID != "" && routeID != "" {
 			result.Trips[tripID] = &TripInfo{
-				RouteID:  routeID,
-				Headsign: headsign,
+				RouteID:   routeID,
+				ServiceID: serviceID,
+				Headsign:  headsign,
 			}
 		}
 
@@ -392,6 +428,7 @@ func (p *Parser) parseStopTimes(file *zip.File, result *ParseResult) error {
 		stopTime := &domain.StopTime{
 			TripID:        tripID,
 			RouteID:       trip.RouteID,
+			ServiceID:     trip.ServiceID,
 			Line:          route.ShortName,
 			Headsign:      trip.Headsign,
 			ArrivalTime:   arrivalTime,
@@ -400,6 +437,97 @@ func (p *Parser) parseStopTimes(file *zip.File, result *ParseResult) error {
 		}
 
 		result.StopSchedules[stopID] = append(result.StopSchedules[stopID], stopTime)
+	}
+
+	return nil
+}
+
+func (p *Parser) parseCalendar(file *zip.File, result *ParseResult) error {
+	rc, err := file.Open()
+	if err != nil {
+		return err
+	}
+	defer rc.Close()
+
+	r := csv.NewReader(rc)
+	header, err := r.Read()
+	if err != nil {
+		return err
+	}
+
+	idx := makeIndex(header)
+
+	for {
+		record, err := r.Read()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			return err
+		}
+
+		serviceID := getField(record, idx, "service_id")
+		if serviceID == "" {
+			continue
+		}
+
+		calendar := &domain.Calendar{
+			ServiceID: serviceID,
+			Monday:    getField(record, idx, "monday") == "1",
+			Tuesday:   getField(record, idx, "tuesday") == "1",
+			Wednesday: getField(record, idx, "wednesday") == "1",
+			Thursday:  getField(record, idx, "thursday") == "1",
+			Friday:    getField(record, idx, "friday") == "1",
+			Saturday:  getField(record, idx, "saturday") == "1",
+			Sunday:    getField(record, idx, "sunday") == "1",
+			StartDate: getField(record, idx, "start_date"),
+			EndDate:   getField(record, idx, "end_date"),
+		}
+
+		result.Calendars[serviceID] = calendar
+	}
+
+	return nil
+}
+
+func (p *Parser) parseCalendarDates(file *zip.File, result *ParseResult) error {
+	rc, err := file.Open()
+	if err != nil {
+		return err
+	}
+	defer rc.Close()
+
+	r := csv.NewReader(rc)
+	header, err := r.Read()
+	if err != nil {
+		return err
+	}
+
+	idx := makeIndex(header)
+
+	for {
+		record, err := r.Read()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			return err
+		}
+
+		serviceID := getField(record, idx, "service_id")
+		if serviceID == "" {
+			continue
+		}
+
+		exceptionType, _ := strconv.Atoi(getField(record, idx, "exception_type"))
+
+		calendarDate := &domain.CalendarDate{
+			ServiceID:     serviceID,
+			Date:          getField(record, idx, "date"),
+			ExceptionType: exceptionType,
+		}
+
+		result.CalendarDates[serviceID] = append(result.CalendarDates[serviceID], calendarDate)
 	}
 
 	return nil
