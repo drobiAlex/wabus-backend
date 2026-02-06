@@ -17,16 +17,22 @@ import (
 )
 
 func main() {
+	cfg, err := config.Load()
+	if err != nil {
+		slog.Error("failed to load config", "error", err)
+		os.Exit(1)
+	}
+
 	logger := slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{
-		Level: slog.LevelInfo,
+		Level: cfg.LogLevel,
 	}))
 	slog.SetDefault(logger)
 
-	cfg, err := config.Load()
-	if err != nil {
-		logger.Error("failed to load config", "error", err)
-		os.Exit(1)
-	}
+	logger.Info("starting wabus server",
+		"log_level", cfg.LogLevel.String(),
+		"http_addr", cfg.HTTPAddr,
+		"gtfs_enabled", cfg.GTFSEnabled,
+	)
 
 	vehicleStore := store.New(cfg.VehicleStaleAfter)
 	gtfsStore := store.NewGTFSStore()
@@ -42,7 +48,7 @@ func main() {
 	httpHandler := handler.NewHTTPHandler(vehicleStore)
 	wsHandler := handler.NewWSHandler(wsHub, vehicleStore, logger)
 	healthHandler := handler.NewHealthHandler(ing, vehicleStore)
-	gtfsHandler := handler.NewGTFSHandler(gtfsStore)
+	gtfsHandler := handler.NewGTFSHandler(gtfsStore, logger)
 
 	mux := http.NewServeMux()
 
@@ -55,6 +61,8 @@ func main() {
 	mux.HandleFunc("GET /v1/routes/{line}/shape", gtfsHandler.GetRouteShape)
 	mux.HandleFunc("GET /v1/stops", gtfsHandler.ListStops)
 	mux.HandleFunc("GET /v1/stops/{id}", gtfsHandler.GetStop)
+	mux.HandleFunc("GET /v1/stops/{id}/schedule", gtfsHandler.GetStopSchedule)
+	mux.HandleFunc("GET /v1/stops/{id}/lines", gtfsHandler.GetStopLines)
 	mux.HandleFunc("GET /v1/gtfs/stats", gtfsHandler.GetStats)
 
 	mux.HandleFunc("GET /healthz", healthHandler.Healthz)

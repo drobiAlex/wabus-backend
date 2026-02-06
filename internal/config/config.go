@@ -2,12 +2,15 @@ package config
 
 import (
 	"fmt"
+	"log/slog"
 	"os"
 	"strconv"
+	"strings"
 	"time"
 )
 
 type Config struct {
+	LogLevel        slog.Level
 	HTTPAddr        string
 	ReadTimeout     time.Duration
 	WriteTimeout    time.Duration
@@ -33,6 +36,7 @@ func Load() (*Config, error) {
 	}
 
 	return &Config{
+		LogLevel:        getLogLevelEnv("LOG_LEVEL", slog.LevelInfo),
 		HTTPAddr:        getEnv("HTTP_ADDR", ":8080"),
 		ReadTimeout:     getDurationEnv("READ_TIMEOUT", 10*time.Second),
 		WriteTimeout:    getDurationEnv("WRITE_TIMEOUT", 10*time.Second),
@@ -84,4 +88,24 @@ func getBoolEnv(key string, defaultVal bool) bool {
 		}
 	}
 	return defaultVal
+}
+
+func getLogLevelEnv(key string, defaultVal slog.Level) slog.Level {
+	v := os.Getenv(key)
+	if v == "" {
+		return defaultVal
+	}
+
+	switch strings.ToLower(v) {
+	case "debug":
+		return slog.LevelDebug
+	case "info":
+		return slog.LevelInfo
+	case "warn", "warning":
+		return slog.LevelWarn
+	case "error":
+		return slog.LevelError
+	default:
+		return defaultVal
+	}
 }

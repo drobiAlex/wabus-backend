@@ -14,21 +14,25 @@ type GTFSStore struct {
 	shapes       map[string]*domain.Shape
 	routeShapes  map[string][]string
 	stops        map[string]*domain.Stop
+	stopSchedules map[string][]*domain.StopTime
+	stopLines     map[string][]*domain.StopLine
 
 	lastUpdate time.Time
 }
 
 func NewGTFSStore() *GTFSStore {
 	return &GTFSStore{
-		routes:       make(map[string]*domain.Route),
-		routesByLine: make(map[string]*domain.Route),
-		shapes:       make(map[string]*domain.Shape),
-		routeShapes:  make(map[string][]string),
-		stops:        make(map[string]*domain.Stop),
+		routes:        make(map[string]*domain.Route),
+		routesByLine:  make(map[string]*domain.Route),
+		shapes:        make(map[string]*domain.Shape),
+		routeShapes:   make(map[string][]string),
+		stops:         make(map[string]*domain.Stop),
+		stopSchedules: make(map[string][]*domain.StopTime),
+		stopLines:     make(map[string][]*domain.StopLine),
 	}
 }
 
-func (s *GTFSStore) UpdateAll(routes map[string]*domain.Route, shapes map[string]*domain.Shape, stops map[string]*domain.Stop, routeShapes map[string][]string) {
+func (s *GTFSStore) UpdateAll(routes map[string]*domain.Route, shapes map[string]*domain.Shape, stops map[string]*domain.Stop, routeShapes map[string][]string, stopSchedules map[string][]*domain.StopTime, stopLines map[string][]*domain.StopLine) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -36,6 +40,8 @@ func (s *GTFSStore) UpdateAll(routes map[string]*domain.Route, shapes map[string
 	s.shapes = shapes
 	s.stops = stops
 	s.routeShapes = routeShapes
+	s.stopSchedules = stopSchedules
+	s.stopLines = stopLines
 	s.lastUpdate = time.Now()
 
 	s.routesByLine = make(map[string]*domain.Route, len(routes))
@@ -125,6 +131,48 @@ func (s *GTFSStore) GetStopByID(id string) (*domain.Stop, bool) {
 	}
 	copy := *stop
 	return &copy, true
+}
+
+func (s *GTFSStore) GetStopSchedule(stopID string) []*domain.StopTime {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	schedule, ok := s.stopSchedules[stopID]
+	if !ok {
+		return nil
+	}
+
+	result := make([]*domain.StopTime, len(schedule))
+	for i, st := range schedule {
+		copy := *st
+		result[i] = &copy
+	}
+	return result
+}
+
+func (s *GTFSStore) GetStopLines(stopID string) []*domain.StopLine {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	lines, ok := s.stopLines[stopID]
+	if !ok {
+		return nil
+	}
+
+	result := make([]*domain.StopLine, len(lines))
+	for i, line := range lines {
+		lineCopy := &domain.StopLine{
+			RouteID:   line.RouteID,
+			Line:      line.Line,
+			LongName:  line.LongName,
+			Type:      line.Type,
+			Color:     line.Color,
+			Headsigns: make([]string, len(line.Headsigns)),
+		}
+		copy(lineCopy.Headsigns, line.Headsigns)
+		result[i] = lineCopy
+	}
+	return result
 }
 
 type GTFSStats struct {

@@ -22,12 +22,13 @@ type GTFSIngestor struct {
 }
 
 func NewGTFSIngestor(url string, store *store.GTFSStore, updateInterval time.Duration, logger *slog.Logger) *GTFSIngestor {
+	ingestorLogger := logger.With("component", "gtfs_ingestor")
 	return &GTFSIngestor{
-		downloader:     gtfs.NewDownloader(url),
-		parser:         gtfs.NewParser(),
+		downloader:     gtfs.NewDownloader(url, logger),
+		parser:         gtfs.NewParser(logger),
 		store:          store,
 		updateInterval: updateInterval,
-		logger:         logger,
+		logger:         ingestorLogger,
 	}
 }
 
@@ -69,7 +70,7 @@ func (i *GTFSIngestor) update(ctx context.Context) {
 
 	parseDuration := time.Since(parseStart)
 
-	i.store.UpdateAll(result.Routes, result.Shapes, result.Stops, result.RouteShapes)
+	i.store.UpdateAll(result.Routes, result.Shapes, result.Stops, result.RouteShapes, result.StopSchedules, result.StopLines)
 
 	if !i.IsReady() {
 		i.setReady(true)
@@ -82,6 +83,7 @@ func (i *GTFSIngestor) update(ctx context.Context) {
 		"routes", len(result.Routes),
 		"shapes", len(result.Shapes),
 		"stops", len(result.Stops),
+		"stops_with_schedules", len(result.StopSchedules),
 	)
 }
 

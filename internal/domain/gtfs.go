@@ -69,3 +69,24 @@ type Stop struct {
 	Lon  float64 `json:"lon"`
 	Zone string  `json:"zone"`
 }
+
+// StopTime represents a scheduled arrival at a stop
+type StopTime struct {
+	TripID        string `json:"trip_id"`
+	RouteID       string `json:"route_id"`
+	Line          string `json:"line"`
+	Headsign      string `json:"headsign"`
+	ArrivalTime   string `json:"arrival_time"`
+	DepartureTime string `json:"departure_time"`
+	StopSequence  int    `json:"stop_sequence"`
+}
+
+// StopLine represents a line that serves a stop
+type StopLine struct {
+	RouteID   string    `json:"route_id"`
+	Line      string    `json:"line"`
+	LongName  string    `json:"long_name"`
+	Type      RouteType `json:"type"`
+	Color     string    `json:"color"`
+	Headsigns []string  `json:"headsigns"`
+}
