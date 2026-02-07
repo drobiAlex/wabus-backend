@@ -27,7 +27,9 @@ rsync -avz --progress -e "ssh -p $PI_PORT" \
   "$LOCAL_BIN" "${PI_USER}@${PI_HOST}:$REMOTE_DIR/bin/wabus-linux-arm64"
 
 rsync -avz --progress -e "ssh -p $PI_PORT" \
-  "$ROOT_DIR/scripts/run-rpi.sh" "${PI_USER}@${PI_HOST}:$REMOTE_DIR/scripts/run-rpi.sh"
+  --include='*.sh' \
+  --exclude='*' \
+  "$ROOT_DIR/scripts/" "${PI_USER}@${PI_HOST}:$REMOTE_DIR/scripts/"
 
 echo "Copying optional .env.example..."
 rsync -avz -e "ssh -p $PI_PORT" \
@@ -46,8 +48,9 @@ else
 fi
 
 echo "Setting executable bits on Raspberry Pi..."
-ssh -p "$PI_PORT" "${PI_USER}@${PI_HOST}" "chmod +x '$REMOTE_DIR/bin/wabus-linux-arm64' '$REMOTE_DIR/scripts/run-rpi.sh'"
+ssh -p "$PI_PORT" "${PI_USER}@${PI_HOST}" "chmod +x '$REMOTE_DIR/bin/wabus-linux-arm64' '$REMOTE_DIR/scripts/'*.sh"
 
 echo "Done. On Raspberry Pi run:"
 echo "  cd $REMOTE_DIR"
 echo "  GTFS_CACHE_DIR=$REMOTE_CACHE_DIR ./scripts/run-rpi.sh"
+echo "  ./scripts/install-systemd.sh"

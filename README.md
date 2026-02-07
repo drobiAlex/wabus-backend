@@ -12,6 +12,20 @@ go build -o wabus ./cmd/wabus
 WARSAW_API_KEY=your_key ./wabus
 ```
 
+## Raspberry Pi deploy flow
+
+```bash
+cd wabus-backend
+./scripts/deploy-rpi.sh
+```
+
+On Raspberry Pi:
+
+```bash
+cd ~/wabus-backend
+GTFS_CACHE_DIR=/tmp/wabus-gtfs-cache ./scripts/run-rpi.sh
+```
+
 ## Configuration
 
 | Variable | Default | Description |

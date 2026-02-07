@@ -421,12 +421,16 @@ func (p *Parser) parseStopTimes(file *zip.File, result *ParseResult) error {
 	defer rc.Close()
 
 	r := csv.NewReader(rc)
+	r.ReuseRecord = true
+	r.FieldsPerRecord = -1
 	header, err := r.Read()
 	if err != nil {
 		return err
 	}
 
 	idx := makeIndex(header)
+	start := time.Now()
+	var rows, accepted uint64
 
 	for {
 		record, err := r.Read()
@@ -436,6 +440,7 @@ func (p *Parser) parseStopTimes(file *zip.File, result *ParseResult) error {
 		if err != nil {
 			return err
 		}
+		rows++
 
 		tripID := getField(record, idx, "trip_id")
 		stopID := getField(record, idx, "stop_id")
@@ -465,7 +470,24 @@ func (p *Parser) parseStopTimes(file *zip.File, result *ParseResult) error {
 		}
 
 		result.StopSchedules[stopID] = append(result.StopSchedules[stopID], stopTime)
+		accepted++
+
+		if rows%1000000 == 0 {
+			p.logger.Info("parseStopTimes progress",
+				"rows_read", rows,
+				"rows_accepted", accepted,
+				"unique_stops", len(result.StopSchedules),
+				"elapsed_ms", time.Since(start).Milliseconds(),
+			)
+		}
 	}
+
+	p.logger.Info("parseStopTimes finished",
+		"rows_read", rows,
+		"rows_accepted", accepted,
+		"unique_stops", len(result.StopSchedules),
+		"elapsed_ms", time.Since(start).Milliseconds(),
+	)
 
 	return nil
 }

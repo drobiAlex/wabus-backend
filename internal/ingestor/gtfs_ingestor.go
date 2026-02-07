@@ -53,7 +53,7 @@ func (i *GTFSIngestor) update(ctx context.Context) {
 	i.logger.Info("starting GTFS update")
 	start := time.Now()
 
-	reader, _, err := i.downloader.Download(ctx)
+	reader, data, err := i.downloader.Download(ctx)
 	if err != nil {
 		i.logger.Error("failed to download GTFS", "error", err)
 		return
@@ -62,11 +62,26 @@ func (i *GTFSIngestor) update(ctx context.Context) {
 	downloadDuration := time.Since(start)
 	i.logger.Info("GTFS downloaded", "duration", downloadDuration)
 
+	cacheDir := gtfs.ParsedCacheDir()
+	fingerprint := gtfs.DataFingerprint(data)
+	i.logger.Info("GTFS fingerprint calculated", "sha256", fingerprint, "cache_dir", cacheDir)
+
 	parseStart := time.Now()
-	result, err := i.parser.Parse(reader)
-	if err != nil {
-		i.logger.Error("failed to parse GTFS", "error", err)
-		return
+	result, cachePath, cacheErr := gtfs.LoadParsedResult(cacheDir, fingerprint)
+	if cacheErr == nil {
+		i.logger.Info("loaded parsed GTFS cache", "path", cachePath)
+	} else {
+		i.logger.Info("parsed GTFS cache miss, parsing ZIP", "path", cachePath, "error", cacheErr)
+		result, err = i.parser.Parse(reader)
+		if err != nil {
+			i.logger.Error("failed to parse GTFS", "error", err)
+			return
+		}
+		if savedPath, saveErr := gtfs.SaveParsedResult(cacheDir, fingerprint, result); saveErr != nil {
+			i.logger.Warn("failed to persist parsed GTFS cache", "error", saveErr)
+		} else {
+			i.logger.Info("persisted parsed GTFS cache", "path", savedPath)
+		}
 	}
 
 	parseDuration := time.Since(parseStart)
