@@ -7,7 +7,6 @@ import (
 	"os"
 	"os/signal"
 	"syscall"
-	"time"
 
 	"wabus/internal/cache"
 	"wabus/internal/config"
@@ -79,8 +78,8 @@ func main() {
 	gtfsHandler := handler.NewGTFSHandler(gtfsStore, redisCache, logger)
 	statsHandler := handler.NewStatsHandler(vehicleStore, gtfsStore)
 
-	// Rate limiter: 120 requests per minute per IP
-	rateLimiter := middleware.NewRateLimiter(120, time.Minute, logger)
+	// Rate limiter (configurable), with optional IP whitelist.
+	rateLimiter := middleware.NewRateLimiter(cfg.RateLimitPerWindow, cfg.RateLimitWindow, cfg.RateLimitWhitelist, logger)
 
 	mux := http.NewServeMux()
 

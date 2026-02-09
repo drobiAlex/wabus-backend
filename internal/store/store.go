@@ -45,8 +45,10 @@ func (s *Store) Update(vehicles []*domain.Vehicle) []domain.VehicleDelta {
 
 		existing, exists := s.vehicles[v.Key]
 		if !exists || hasChanged(existing, v) {
-			if exists && existing.TileID != v.TileID {
-				s.removeFromTileIndex(existing.Key, existing.TileID)
+			if exists {
+				// Remove stale indices before writing updated vehicle.
+				// This prevents index growth when line/type/tile changes.
+				s.removeFromAllIndices(existing)
 			}
 
 			s.vehicles[v.Key] = v

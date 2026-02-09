@@ -4,18 +4,20 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"strings"
 	"sync"
 	"time"
 )
 
 // RateLimiter implements a simple token bucket rate limiter per IP
 type RateLimiter struct {
-	mu       sync.RWMutex
-	clients  map[string]*client
-	rate     int           // requests per window
-	window   time.Duration // time window
-	cleanup  time.Duration // cleanup interval
-	logger   *slog.Logger
+	mu        sync.RWMutex
+	clients   map[string]*client
+	rate      int           // requests per window
+	window    time.Duration // time window
+	cleanup   time.Duration // cleanup interval
+	whitelist map[string]struct{}
+	logger    *slog.Logger
 }
 
 type client struct {
@@ -23,14 +25,24 @@ type client struct {
 	lastReset time.Time
 }
 
-// NewRateLimiter creates a rate limiter allowing 'rate' requests per 'window'
-func NewRateLimiter(rate int, window time.Duration, logger *slog.Logger) *RateLimiter {
+// NewRateLimiter creates a rate limiter allowing 'rate' requests per 'window'.
+// IPs in whitelist bypass the limiter.
+func NewRateLimiter(rate int, window time.Duration, whitelist []string, logger *slog.Logger) *RateLimiter {
+	wl := make(map[string]struct{}, len(whitelist))
+	for _, ip := range whitelist {
+		ip = strings.TrimSpace(ip)
+		if ip != "" {
+			wl[ip] = struct{}{}
+		}
+	}
+
 	rl := &RateLimiter{
-		clients: make(map[string]*client),
-		rate:    rate,
-		window:  window,
-		cleanup: window * 2,
-		logger:  logger.With("component", "rate_limiter"),
+		clients:   make(map[string]*client),
+		rate:      rate,
+		window:    window,
+		cleanup:   window * 2,
+		whitelist: wl,
+		logger:    logger.With("component", "rate_limiter"),
 	}
 
 	// Start cleanup goroutine
@@ -41,6 +53,7 @@ func NewRateLimiter(rate int, window time.Duration, logger *slog.Logger) *RateLi
 
 func (rl *RateLimiter) cleanupLoop() {
 	ticker := time.NewTicker(rl.cleanup)
+	defer ticker.Stop()
 	for range ticker.C {
 		rl.mu.Lock()
 		now := time.Now()
@@ -51,6 +64,13 @@ func (rl *RateLimiter) cleanupLoop() {
 		}
 		rl.mu.Unlock()
 	}
+}
+
+func (rl *RateLimiter) IsWhitelisted(ip string) bool {
+	rl.mu.RLock()
+	defer rl.mu.RUnlock()
+	_, ok := rl.whitelist[ip]
+	return ok
 }
 
 // Allow checks if a request from the given IP should be allowed
@@ -89,6 +109,10 @@ func (rl *RateLimiter) Allow(ip string) bool {
 func (rl *RateLimiter) Middleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		ip := getClientIP(r)
+		if rl.IsWhitelisted(ip) {
+			next.ServeHTTP(w, r)
+			return
+		}
 
 		if !rl.Allow(ip) {
 			rl.logger.Warn("rate limit exceeded", "ip", ip, "path", r.URL.Path)
@@ -102,17 +126,17 @@ func (rl *RateLimiter) Middleware(next http.Handler) http.Handler {
 }
 
 func getClientIP(r *http.Request) string {
-	// Check X-Forwarded-For header (from reverse proxy)
-	if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
-		// Take the first IP in the list
-		if ip, _, err := net.SplitHostPort(xff); err == nil {
-			return ip
+	// Check X-Forwarded-For header (from reverse proxy). Example: "client, proxy1, proxy2"
+	if xff := strings.TrimSpace(r.Header.Get("X-Forwarded-For")); xff != "" {
+		first := strings.TrimSpace(strings.Split(xff, ",")[0])
+		if host, _, err := net.SplitHostPort(first); err == nil {
+			return host
 		}
-		return xff
+		return first
 	}
 
 	// Check X-Real-IP header
-	if xri := r.Header.Get("X-Real-IP"); xri != "" {
+	if xri := strings.TrimSpace(r.Header.Get("X-Real-IP")); xri != "" {
 		return xri
 	}
 
@@ -130,8 +154,9 @@ func (rl *RateLimiter) Stats() map[string]interface{} {
 	defer rl.mu.RUnlock()
 
 	return map[string]interface{}{
-		"tracked_ips":    len(rl.clients),
-		"rate_per_window": rl.rate,
-		"window_seconds": rl.window.Seconds(),
+		"tracked_ips":      len(rl.clients),
+		"rate_per_window":  rl.rate,
+		"window_seconds":   rl.window.Seconds(),
+		"whitelist_entries": len(rl.whitelist),
 	}
 }

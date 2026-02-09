@@ -82,3 +82,15 @@ Warsaw API (10s poll)
        ▼
       Hub ─────► WebSocket Clients (tile-based fanout)
 ```
+
+
+# Run stress test with vegeta:
+
+```bash
+export BASE_URL=https://wabus-api.lokki.space &&
+export REQ_PER_SEC=300 &&
+export DURATION=20s &&
+export TARGETS_COUNT=800 &&
+export RATE_LIMIT_WHITELIST=46.205.203.191 &&
+./scripts/stress-gtfs.sh
+```

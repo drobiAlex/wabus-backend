@@ -20,20 +20,15 @@ type ParseResult struct {
 	Stops       map[string]*domain.Stop
 	RouteShapes map[string][]string // route_id -> []shape_id
 
-	StopSchedules map[string][]*domain.StopTime   // stop_id -> []StopTime
-	StopLines     map[string][]*domain.StopLine   // stop_id -> []StopLine
-	RouteStops     map[string][]*domain.Stop            // route_id -> []Stop (ordered)
+	StopSchedules  map[string][]domain.StopTimeCompact // stop_id -> compact stop times
+	StopLines      map[string][]*domain.StopLine       // stop_id -> []StopLine
+	RouteStops     map[string][]*domain.Stop           // route_id -> []Stop (ordered)
 	RouteTripTimes map[string][]*domain.TripTimeEntry  // route_id -> []TripTimeEntry
-	Trips          map[string]*TripInfo                // trip_id -> TripInfo (internal)
+	Trips          []domain.TripMeta                   // indexed trip metadata
 	Calendars      map[string]*domain.Calendar         // service_id -> Calendar
 	CalendarDates  map[string][]*domain.CalendarDate   // service_id -> []CalendarDate
-}
 
-type TripInfo struct {
-	RouteID   string
-	ServiceID string
-	ShapeID   string
-	Headsign  string
+	tripIndex map[string]uint32 // trip_id -> index in Trips (parse-only)
 }
 
 type Parser struct {
@@ -51,17 +46,18 @@ func (p *Parser) Parse(reader *zip.Reader) (*ParseResult, error) {
 	p.logger.Info("starting GTFS parsing")
 
 	result := &ParseResult{
-		Routes:        make(map[string]*domain.Route),
-		Shapes:        make(map[string]*domain.Shape),
-		Stops:         make(map[string]*domain.Stop),
-		RouteShapes:   make(map[string][]string),
-		StopSchedules: make(map[string][]*domain.StopTime),
-		StopLines:     make(map[string][]*domain.StopLine),
+		Routes:         make(map[string]*domain.Route),
+		Shapes:         make(map[string]*domain.Shape),
+		Stops:          make(map[string]*domain.Stop),
+		RouteShapes:    make(map[string][]string),
+		StopSchedules:  make(map[string][]domain.StopTimeCompact),
+		StopLines:      make(map[string][]*domain.StopLine),
 		RouteStops:     make(map[string][]*domain.Stop),
 		RouteTripTimes: make(map[string][]*domain.TripTimeEntry),
-		Trips:          make(map[string]*TripInfo),
+		Trips:          make([]domain.TripMeta, 0, 300000),
 		Calendars:      make(map[string]*domain.Calendar),
 		CalendarDates:  make(map[string][]*domain.CalendarDate),
+		tripIndex:      make(map[string]uint32, 300000),
 	}
 
 	fileMap := make(map[string]*zip.File)
@@ -202,6 +198,10 @@ func (p *Parser) Parse(reader *zip.Reader) (*ParseResult, error) {
 		"total_entries", totalEntries,
 		"duration_ms", time.Since(start).Milliseconds(),
 	)
+
+	// tripIndex is only needed while parsing stop_times.txt.
+	// Drop it now to reduce retained heap before returning the parsed dataset.
+	result.tripIndex = nil
 
 	p.logger.Info("GTFS parsing completed",
 		"total_duration_ms", time.Since(totalStart).Milliseconds(),
@@ -370,7 +370,7 @@ func (p *Parser) parseTrips(file *zip.File, result *ParseResult) error {
 
 	idx := makeIndex(header)
 
-	seen := make(map[string]map[string]bool)
+	seenRouteShapes := make(map[string]map[string]bool)
 
 	for {
 		record, err := r.Read()
@@ -388,11 +388,16 @@ func (p *Parser) parseTrips(file *zip.File, result *ParseResult) error {
 		headsign := getField(record, idx, "trip_headsign")
 
 		if tripID != "" && routeID != "" {
-			result.Trips[tripID] = &TripInfo{
-				RouteID:   routeID,
-				ServiceID: serviceID,
-				ShapeID:   shapeID,
-				Headsign:  headsign,
+			if _, exists := result.tripIndex[tripID]; !exists {
+				tripIdx := uint32(len(result.Trips))
+				result.tripIndex[tripID] = tripIdx
+				result.Trips = append(result.Trips, domain.TripMeta{
+					ID:        tripID,
+					RouteID:   routeID,
+					ServiceID: serviceID,
+					ShapeID:   shapeID,
+					Headsign:  headsign,
+				})
 			}
 		}
 
@@ -400,12 +405,12 @@ func (p *Parser) parseTrips(file *zip.File, result *ParseResult) error {
 			continue
 		}
 
-		if seen[routeID] == nil {
-			seen[routeID] = make(map[string]bool)
+		if seenRouteShapes[routeID] == nil {
+			seenRouteShapes[routeID] = make(map[string]bool)
 		}
 
-		if !seen[routeID][shapeID] {
-			seen[routeID][shapeID] = true
+		if !seenRouteShapes[routeID][shapeID] {
+			seenRouteShapes[routeID][shapeID] = true
 			result.RouteShapes[routeID] = append(result.RouteShapes[routeID], shapeID)
 		}
 	}
@@ -443,33 +448,32 @@ func (p *Parser) parseStopTimes(file *zip.File, result *ParseResult) error {
 		rows++
 
 		tripID := getField(record, idx, "trip_id")
+		tripIdx, ok := result.tripIndex[tripID]
+		if !ok {
+			continue
+		}
+
 		stopID := getField(record, idx, "stop_id")
-		arrivalTime := getField(record, idx, "arrival_time")
-		departureTime := getField(record, idx, "departure_time")
+		if stopID == "" {
+			continue
+		}
+
+		arrivalSeconds := parseGTFSTimeToSeconds(getField(record, idx, "arrival_time"))
+		departureSeconds := parseGTFSTimeToSeconds(getField(record, idx, "departure_time"))
 		stopSeq, _ := strconv.Atoi(getField(record, idx, "stop_sequence"))
-
-		trip, ok := result.Trips[tripID]
-		if !ok {
-			continue
+		if stopSeq < 0 {
+			stopSeq = 0
+		}
+		if stopSeq > 65535 {
+			stopSeq = 65535
 		}
 
-		route, ok := result.Routes[trip.RouteID]
-		if !ok {
-			continue
-		}
-
-		stopTime := &domain.StopTime{
-			TripID:        tripID,
-			RouteID:       trip.RouteID,
-			ServiceID:     trip.ServiceID,
-			Line:          route.ShortName,
-			Headsign:      trip.Headsign,
-			ArrivalTime:   arrivalTime,
-			DepartureTime: departureTime,
-			StopSequence:  stopSeq,
-		}
-
-		result.StopSchedules[stopID] = append(result.StopSchedules[stopID], stopTime)
+		result.StopSchedules[stopID] = append(result.StopSchedules[stopID], domain.StopTimeCompact{
+			TripIndex:        tripIdx,
+			ArrivalSeconds:   uint32(arrivalSeconds),
+			DepartureSeconds: uint32(departureSeconds),
+			StopSequence:     uint16(stopSeq),
+		})
 		accepted++
 
 		if rows%1000000 == 0 {
@@ -589,24 +593,31 @@ func (p *Parser) buildStopLines(result *ParseResult) {
 		headsignMap := make(map[string]map[string]bool)
 
 		for _, st := range stopTimes {
-			if _, exists := lineMap[st.RouteID]; !exists {
-				route := result.Routes[st.RouteID]
+			tripIdx := int(st.TripIndex)
+			if tripIdx < 0 || tripIdx >= len(result.Trips) {
+				continue
+			}
+			trip := result.Trips[tripIdx]
+			routeID := trip.RouteID
+
+			if _, exists := lineMap[routeID]; !exists {
+				route := result.Routes[routeID]
 				if route == nil {
 					continue
 				}
-				lineMap[st.RouteID] = &domain.StopLine{
-					RouteID:  st.RouteID,
+				lineMap[routeID] = &domain.StopLine{
+					RouteID:  routeID,
 					Line:     route.ShortName,
 					LongName: route.LongName,
 					Type:     route.Type,
 					Color:    route.Color,
 				}
-				headsignMap[st.RouteID] = make(map[string]bool)
+				headsignMap[routeID] = make(map[string]bool)
 			}
 
-			if st.Headsign != "" && !headsignMap[st.RouteID][st.Headsign] {
-				headsignMap[st.RouteID][st.Headsign] = true
-				lineMap[st.RouteID].Headsigns = append(lineMap[st.RouteID].Headsigns, st.Headsign)
+			if trip.Headsign != "" && !headsignMap[routeID][trip.Headsign] {
+				headsignMap[routeID][trip.Headsign] = true
+				lineMap[routeID].Headsigns = append(lineMap[routeID].Headsigns, trip.Headsign)
 			}
 		}
 
@@ -624,21 +635,31 @@ func (p *Parser) buildStopLines(result *ParseResult) {
 }
 
 func (p *Parser) buildRouteStops(result *ParseResult) {
-	// Collect unique stop IDs per route, tracking the lowest stop_sequence per stop
+	// Collect unique stop IDs per route, tracking the lowest stop_sequence per stop.
 	type stopEntry struct {
-		stopID   string
-		minSeq   int
+		stopID string
+		minSeq int
 	}
 	routeStopMap := make(map[string]map[string]*stopEntry) // route_id -> stop_id -> entry
 
 	for stopID, stopTimes := range result.StopSchedules {
 		for _, st := range stopTimes {
-			if _, ok := routeStopMap[st.RouteID]; !ok {
-				routeStopMap[st.RouteID] = make(map[string]*stopEntry)
+			tripIdx := int(st.TripIndex)
+			if tripIdx < 0 || tripIdx >= len(result.Trips) {
+				continue
 			}
-			existing, exists := routeStopMap[st.RouteID][stopID]
-			if !exists || st.StopSequence < existing.minSeq {
-				routeStopMap[st.RouteID][stopID] = &stopEntry{stopID: stopID, minSeq: st.StopSequence}
+			routeID := result.Trips[tripIdx].RouteID
+			if routeID == "" {
+				continue
+			}
+
+			if _, ok := routeStopMap[routeID]; !ok {
+				routeStopMap[routeID] = make(map[string]*stopEntry)
+			}
+			existing, exists := routeStopMap[routeID][stopID]
+			seq := int(st.StopSequence)
+			if !exists || seq < existing.minSeq {
+				routeStopMap[routeID][stopID] = &stopEntry{stopID: stopID, minSeq: seq}
 			}
 		}
 	}
@@ -664,60 +685,82 @@ func (p *Parser) buildRouteStops(result *ParseResult) {
 }
 
 func (p *Parser) buildTripTimeRanges(result *ParseResult) {
-	// Build per-trip time ranges from stop schedules
-	type timeRange struct {
-		minTime int
-		maxTime int
+	// Build per-trip time ranges from compact stop schedules.
+	tripCount := len(result.Trips)
+	if tripCount == 0 {
+		return
 	}
-	tripTimes := make(map[string]*timeRange)
+
+	minTime := make([]int, tripCount)
+	maxTime := make([]int, tripCount)
+	seen := make([]bool, tripCount)
 
 	for _, stopTimes := range result.StopSchedules {
 		for _, st := range stopTimes {
-			dep := parseGTFSTimeToMinutes(st.DepartureTime)
-			arr := parseGTFSTimeToMinutes(st.ArrivalTime)
+			tripIdx := int(st.TripIndex)
+			if tripIdx < 0 || tripIdx >= tripCount {
+				continue
+			}
 
-			if tr, ok := tripTimes[st.TripID]; ok {
-				if dep < tr.minTime {
-					tr.minTime = dep
+			dep := int(st.DepartureSeconds / 60)
+			arr := int(st.ArrivalSeconds / 60)
+
+			if seen[tripIdx] {
+				if dep < minTime[tripIdx] {
+					minTime[tripIdx] = dep
 				}
-				if arr > tr.maxTime {
-					tr.maxTime = arr
+				if arr > maxTime[tripIdx] {
+					maxTime[tripIdx] = arr
 				}
 			} else {
-				tripTimes[st.TripID] = &timeRange{minTime: dep, maxTime: arr}
+				seen[tripIdx] = true
+				minTime[tripIdx] = dep
+				maxTime[tripIdx] = arr
 			}
 		}
 	}
 
 	// Map trips to route -> [{shape, service, start, end}]
-	for tripID, trip := range result.Trips {
-		if trip.ShapeID == "" {
-			continue
-		}
-		tr, ok := tripTimes[tripID]
-		if !ok {
+	for idx, trip := range result.Trips {
+		if trip.ShapeID == "" || !seen[idx] {
 			continue
 		}
 
 		entry := &domain.TripTimeEntry{
 			ShapeID:      trip.ShapeID,
 			ServiceID:    trip.ServiceID,
-			StartMinutes: tr.minTime,
-			EndMinutes:   tr.maxTime,
+			StartMinutes: minTime[idx],
+			EndMinutes:   maxTime[idx],
 		}
 
 		result.RouteTripTimes[trip.RouteID] = append(result.RouteTripTimes[trip.RouteID], entry)
 	}
 }
 
-func parseGTFSTimeToMinutes(timeStr string) int {
+func parseGTFSTimeToSeconds(timeStr string) int {
 	parts := strings.Split(timeStr, ":")
 	if len(parts) < 2 {
 		return 0
 	}
+
 	hours, _ := strconv.Atoi(parts[0])
 	minutes, _ := strconv.Atoi(parts[1])
-	return hours*60 + minutes
+	seconds := 0
+	if len(parts) >= 3 {
+		seconds, _ = strconv.Atoi(parts[2])
+	}
+
+	if hours < 0 {
+		hours = 0
+	}
+	if minutes < 0 {
+		minutes = 0
+	}
+	if seconds < 0 {
+		seconds = 0
+	}
+
+	return hours*3600 + minutes*60 + seconds
 }
 
 func makeIndex(header []string) map[string]int {

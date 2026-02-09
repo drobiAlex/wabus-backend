@@ -111,6 +111,31 @@ type TripTimeEntry struct {
 	EndMinutes   int // minutes since midnight
 }
 
+// TripMeta stores compact trip metadata used when decoding stop schedules.
+type TripMeta struct {
+	ID        string
+	RouteID   string
+	ServiceID string
+	ShapeID   string
+	Headsign  string
+}
+
+// StopTimeCompact is a memory-efficient stop time representation.
+//
+// Instead of storing repeated strings (trip_id, route_id, service_id, line,
+// headsign, arrival/departure) for every stop_times.txt row, we store only:
+//   - TripIndex: reference into []TripMeta
+//   - ArrivalSeconds / DepartureSeconds: GTFS time as seconds since midnight
+//   - StopSequence: GTFS stop sequence
+//
+// This dramatically reduces memory usage on constrained devices (e.g. Raspberry Pi).
+type StopTimeCompact struct {
+	TripIndex        uint32
+	ArrivalSeconds   uint32
+	DepartureSeconds uint32
+	StopSequence     uint16
+}
+
 // StopLine represents a line that serves a stop
 type StopLine struct {
 	RouteID   string    `json:"route_id"`

@@ -34,6 +34,10 @@ type Config struct {
 	RedisDB          int
 	CacheTTL         time.Duration
 	CacheWarmOnStart bool
+
+	RateLimitPerWindow int
+	RateLimitWindow    time.Duration
+	RateLimitWhitelist []string
 }
 
 func Load() (*Config, error) {
@@ -67,6 +71,10 @@ func Load() (*Config, error) {
 		RedisDB:          getIntEnv("REDIS_DB", 0),
 		CacheTTL:         getDurationEnv("CACHE_TTL", 24*time.Hour),
 		CacheWarmOnStart: getBoolEnv("CACHE_WARM_ON_START", true),
+
+		RateLimitPerWindow: getIntEnv("RATE_LIMIT_PER_WINDOW", 120),
+		RateLimitWindow:    getDurationEnv("RATE_LIMIT_WINDOW", time.Minute),
+		RateLimitWhitelist: getCSVEnv("RATE_LIMIT_WHITELIST"),
 	}, nil
 }
 
@@ -122,4 +130,21 @@ func getLogLevelEnv(key string, defaultVal slog.Level) slog.Level {
 	default:
 		return defaultVal
 	}
+}
+
+func getCSVEnv(key string) []string {
+	v := strings.TrimSpace(os.Getenv(key))
+	if v == "" {
+		return nil
+	}
+
+	parts := strings.Split(v, ",")
+	result := make([]string, 0, len(parts))
+	for _, p := range parts {
+		t := strings.TrimSpace(p)
+		if t != "" {
+			result = append(result, t)
+		}
+	}
+	return result
 }

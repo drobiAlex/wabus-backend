@@ -1,6 +1,7 @@
 package store
 
 import (
+	"fmt"
 	"sync"
 	"time"
 
@@ -8,39 +9,41 @@ import (
 )
 
 type GTFSStore struct {
-	mu           sync.RWMutex
-	routes       map[string]*domain.Route
-	routesByLine map[string]*domain.Route
-	shapes       map[string]*domain.Shape
-	routeShapes  map[string][]string
-	stops        map[string]*domain.Stop
+	mu             sync.RWMutex
+	routes         map[string]*domain.Route
+	routesByLine   map[string]*domain.Route
+	shapes         map[string]*domain.Shape
+	routeShapes    map[string][]string
+	stops          map[string]*domain.Stop
 	routeStops     map[string][]*domain.Stop
 	routeTripTimes map[string][]*domain.TripTimeEntry
-	stopSchedules  map[string][]*domain.StopTime
-	stopLines     map[string][]*domain.StopLine
-	calendars     map[string]*domain.Calendar
-	calendarDates map[string][]*domain.CalendarDate
+	stopSchedules  map[string][]domain.StopTimeCompact
+	stopLines      map[string][]*domain.StopLine
+	trips          []domain.TripMeta
+	calendars      map[string]*domain.Calendar
+	calendarDates  map[string][]*domain.CalendarDate
 
 	lastUpdate time.Time
 }
 
 func NewGTFSStore() *GTFSStore {
 	return &GTFSStore{
-		routes:        make(map[string]*domain.Route),
-		routesByLine:  make(map[string]*domain.Route),
-		shapes:        make(map[string]*domain.Shape),
-		routeShapes:   make(map[string][]string),
-		stops:         make(map[string]*domain.Stop),
+		routes:         make(map[string]*domain.Route),
+		routesByLine:   make(map[string]*domain.Route),
+		shapes:         make(map[string]*domain.Shape),
+		routeShapes:    make(map[string][]string),
+		stops:          make(map[string]*domain.Stop),
 		routeStops:     make(map[string][]*domain.Stop),
 		routeTripTimes: make(map[string][]*domain.TripTimeEntry),
-		stopSchedules:  make(map[string][]*domain.StopTime),
-		stopLines:     make(map[string][]*domain.StopLine),
-		calendars:     make(map[string]*domain.Calendar),
-		calendarDates: make(map[string][]*domain.CalendarDate),
+		stopSchedules:  make(map[string][]domain.StopTimeCompact),
+		stopLines:      make(map[string][]*domain.StopLine),
+		trips:          make([]domain.TripMeta, 0),
+		calendars:      make(map[string]*domain.Calendar),
+		calendarDates:  make(map[string][]*domain.CalendarDate),
 	}
 }
 
-func (s *GTFSStore) UpdateAll(routes map[string]*domain.Route, shapes map[string]*domain.Shape, stops map[string]*domain.Stop, routeShapes map[string][]string, stopSchedules map[string][]*domain.StopTime, stopLines map[string][]*domain.StopLine, routeStops map[string][]*domain.Stop, routeTripTimes map[string][]*domain.TripTimeEntry, calendars map[string]*domain.Calendar, calendarDates map[string][]*domain.CalendarDate) {
+func (s *GTFSStore) UpdateAll(routes map[string]*domain.Route, shapes map[string]*domain.Shape, stops map[string]*domain.Stop, routeShapes map[string][]string, stopSchedules map[string][]domain.StopTimeCompact, stopLines map[string][]*domain.StopLine, routeStops map[string][]*domain.Stop, routeTripTimes map[string][]*domain.TripTimeEntry, trips []domain.TripMeta, calendars map[string]*domain.Calendar, calendarDates map[string][]*domain.CalendarDate) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -52,6 +55,7 @@ func (s *GTFSStore) UpdateAll(routes map[string]*domain.Route, shapes map[string
 	s.stopLines = stopLines
 	s.routeStops = routeStops
 	s.routeTripTimes = routeTripTimes
+	s.trips = trips
 	s.calendars = calendars
 	s.calendarDates = calendarDates
 	s.lastUpdate = time.Now()
@@ -229,10 +233,12 @@ func (s *GTFSStore) GetStopSchedule(stopID string) []*domain.StopTime {
 		return nil
 	}
 
-	result := make([]*domain.StopTime, len(schedule))
-	for i, st := range schedule {
-		copy := *st
-		result[i] = &copy
+	result := make([]*domain.StopTime, 0, len(schedule))
+	for _, st := range schedule {
+		decoded, ok := s.decodeStopTimeLocked(st)
+		if ok {
+			result = append(result, decoded)
+		}
 	}
 	return result
 }
@@ -248,17 +254,56 @@ func (s *GTFSStore) GetStopScheduleForDate(stopID string, date time.Time) []*dom
 
 	dateStr := date.Format("20060102")
 	weekday := date.Weekday()
-
 	activeServices := s.getActiveServices(dateStr, weekday)
 
-	var result []*domain.StopTime
+	result := make([]*domain.StopTime, 0, len(schedule))
 	for _, st := range schedule {
-		if activeServices[st.ServiceID] {
-			copy := *st
-			result = append(result, &copy)
+		tripIdx := int(st.TripIndex)
+		if tripIdx < 0 || tripIdx >= len(s.trips) {
+			continue
+		}
+		trip := s.trips[tripIdx]
+		if !activeServices[trip.ServiceID] {
+			continue
+		}
+
+		decoded, ok := s.decodeStopTimeLocked(st)
+		if ok {
+			result = append(result, decoded)
 		}
 	}
 	return result
+}
+
+func (s *GTFSStore) decodeStopTimeLocked(st domain.StopTimeCompact) (*domain.StopTime, bool) {
+	tripIdx := int(st.TripIndex)
+	if tripIdx < 0 || tripIdx >= len(s.trips) {
+		return nil, false
+	}
+	trip := s.trips[tripIdx]
+
+	line := ""
+	if route, ok := s.routes[trip.RouteID]; ok {
+		line = route.ShortName
+	}
+
+	return &domain.StopTime{
+		TripID:        trip.ID,
+		RouteID:       trip.RouteID,
+		ServiceID:     trip.ServiceID,
+		Line:          line,
+		Headsign:      trip.Headsign,
+		ArrivalTime:   formatGTFSTime(st.ArrivalSeconds),
+		DepartureTime: formatGTFSTime(st.DepartureSeconds),
+		StopSequence:  int(st.StopSequence),
+	}, true
+}
+
+func formatGTFSTime(totalSeconds uint32) string {
+	hours := totalSeconds / 3600
+	minutes := (totalSeconds % 3600) / 60
+	seconds := totalSeconds % 60
+	return fmt.Sprintf("%02d:%02d:%02d", hours, minutes, seconds)
 }
 
 func (s *GTFSStore) getActiveServices(dateStr string, weekday time.Weekday) map[string]bool {
