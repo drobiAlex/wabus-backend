@@ -9,7 +9,7 @@ OUTPUT_DIR="$ROOT_DIR/bin"
 OUTPUT_BIN="$OUTPUT_DIR/${APP_NAME}-linux-arm64"
 HOST_BIN="$OUTPUT_DIR/${APP_NAME}-host"
 ENV_FILE="${ENV_FILE:-$ROOT_DIR/.env}"
-CACHE_DIR="${GTFS_CACHE_DIR:-/tmp/wabus-gtfs-cache}"
+CACHE_DIR="${GTFS_CACHE_DIR:-.cache/gtfs}"
 WAIT_TIMEOUT_SEC="${WAIT_TIMEOUT_SEC:-900}"
 LOG_FILE="${LOG_FILE:-$ROOT_DIR/bin/gtfs-precompute.log}"
 

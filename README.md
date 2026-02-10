@@ -23,7 +23,7 @@ On Raspberry Pi:
 
 ```bash
 cd ~/wabus-backend
-GTFS_CACHE_DIR=/tmp/wabus-gtfs-cache ./scripts/run-rpi.sh
+GTFS_CACHE_DIR=.cache/gtfs ./scripts/run-rpi.sh
 ```
 
 ## Configuration

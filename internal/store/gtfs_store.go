@@ -9,41 +9,43 @@ import (
 )
 
 type GTFSStore struct {
-	mu             sync.RWMutex
-	routes         map[string]*domain.Route
-	routesByLine   map[string]*domain.Route
-	shapes         map[string]*domain.Shape
-	routeShapes    map[string][]string
-	stops          map[string]*domain.Stop
-	routeStops     map[string][]*domain.Stop
-	routeTripTimes map[string][]*domain.TripTimeEntry
-	stopSchedules  map[string][]domain.StopTimeCompact
-	stopLines      map[string][]*domain.StopLine
-	trips          []domain.TripMeta
-	calendars      map[string]*domain.Calendar
-	calendarDates  map[string][]*domain.CalendarDate
+	mu              sync.RWMutex
+	routes          map[string]*domain.Route
+	routesByLine    map[string]*domain.Route
+	shapes          map[string]*domain.Shape
+	routeShapes     map[string][]string
+	stops           map[string]*domain.Stop
+	routeStops      map[string][]*domain.Stop
+	routeTripTimes  map[string][]*domain.TripTimeEntry
+	stopSchedules   map[string][]domain.StopTimeCompact
+	stopLines       map[string][]*domain.StopLine
+	trips           []domain.TripMeta
+	calendars       map[string]*domain.Calendar
+	calendarDates   map[string][]*domain.CalendarDate
+	shapeDirections map[string]int
 
 	lastUpdate time.Time
 }
 
 func NewGTFSStore() *GTFSStore {
 	return &GTFSStore{
-		routes:         make(map[string]*domain.Route),
-		routesByLine:   make(map[string]*domain.Route),
-		shapes:         make(map[string]*domain.Shape),
-		routeShapes:    make(map[string][]string),
-		stops:          make(map[string]*domain.Stop),
-		routeStops:     make(map[string][]*domain.Stop),
-		routeTripTimes: make(map[string][]*domain.TripTimeEntry),
-		stopSchedules:  make(map[string][]domain.StopTimeCompact),
-		stopLines:      make(map[string][]*domain.StopLine),
-		trips:          make([]domain.TripMeta, 0),
-		calendars:      make(map[string]*domain.Calendar),
-		calendarDates:  make(map[string][]*domain.CalendarDate),
+		routes:          make(map[string]*domain.Route),
+		routesByLine:    make(map[string]*domain.Route),
+		shapes:          make(map[string]*domain.Shape),
+		routeShapes:     make(map[string][]string),
+		stops:           make(map[string]*domain.Stop),
+		routeStops:      make(map[string][]*domain.Stop),
+		routeTripTimes:  make(map[string][]*domain.TripTimeEntry),
+		stopSchedules:   make(map[string][]domain.StopTimeCompact),
+		stopLines:       make(map[string][]*domain.StopLine),
+		trips:           make([]domain.TripMeta, 0),
+		calendars:       make(map[string]*domain.Calendar),
+		calendarDates:   make(map[string][]*domain.CalendarDate),
+		shapeDirections: make(map[string]int),
 	}
 }
 
-func (s *GTFSStore) UpdateAll(routes map[string]*domain.Route, shapes map[string]*domain.Shape, stops map[string]*domain.Stop, routeShapes map[string][]string, stopSchedules map[string][]domain.StopTimeCompact, stopLines map[string][]*domain.StopLine, routeStops map[string][]*domain.Stop, routeTripTimes map[string][]*domain.TripTimeEntry, trips []domain.TripMeta, calendars map[string]*domain.Calendar, calendarDates map[string][]*domain.CalendarDate) {
+func (s *GTFSStore) UpdateAll(routes map[string]*domain.Route, shapes map[string]*domain.Shape, stops map[string]*domain.Stop, routeShapes map[string][]string, stopSchedules map[string][]domain.StopTimeCompact, stopLines map[string][]*domain.StopLine, routeStops map[string][]*domain.Stop, routeTripTimes map[string][]*domain.TripTimeEntry, trips []domain.TripMeta, calendars map[string]*domain.Calendar, calendarDates map[string][]*domain.CalendarDate, shapeDirections map[string]int) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -58,6 +60,7 @@ func (s *GTFSStore) UpdateAll(routes map[string]*domain.Route, shapes map[string
 	s.trips = trips
 	s.calendars = calendars
 	s.calendarDates = calendarDates
+	s.shapeDirections = shapeDirections
 	s.lastUpdate = time.Now()
 
 	s.routesByLine = make(map[string]*domain.Route, len(routes))
@@ -153,9 +156,11 @@ func (s *GTFSStore) GetActiveRouteShapes(routeID string, date time.Time, timeMin
 	var result []*domain.Shape
 	for shapeID := range activeShapeIDs {
 		if shape, ok := s.shapes[shapeID]; ok {
+			dir := s.shapeDirections[shapeID]
 			shapeCopy := &domain.Shape{
-				ID:     shape.ID,
-				Points: make([]domain.ShapePoint, len(shape.Points)),
+				ID:          shape.ID,
+				Points:      make([]domain.ShapePoint, len(shape.Points)),
+				DirectionID: &dir,
 			}
 			copy(shapeCopy.Points, shape.Points)
 			result = append(result, shapeCopy)
@@ -172,9 +177,11 @@ func (s *GTFSStore) getRouteShapesLocked(routeID string) []*domain.Shape {
 	result := make([]*domain.Shape, 0, len(shapeIDs))
 	for _, shapeID := range shapeIDs {
 		if shape, ok := s.shapes[shapeID]; ok {
+			dir := s.shapeDirections[shapeID]
 			shapeCopy := &domain.Shape{
-				ID:     shape.ID,
-				Points: make([]domain.ShapePoint, len(shape.Points)),
+				ID:          shape.ID,
+				Points:      make([]domain.ShapePoint, len(shape.Points)),
+				DirectionID: &dir,
 			}
 			copy(shapeCopy.Points, shape.Points)
 			result = append(result, shapeCopy)

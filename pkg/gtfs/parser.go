@@ -20,13 +20,14 @@ type ParseResult struct {
 	Stops       map[string]*domain.Stop
 	RouteShapes map[string][]string // route_id -> []shape_id
 
-	StopSchedules  map[string][]domain.StopTimeCompact // stop_id -> compact stop times
-	StopLines      map[string][]*domain.StopLine       // stop_id -> []StopLine
-	RouteStops     map[string][]*domain.Stop           // route_id -> []Stop (ordered)
-	RouteTripTimes map[string][]*domain.TripTimeEntry  // route_id -> []TripTimeEntry
-	Trips          []domain.TripMeta                   // indexed trip metadata
-	Calendars      map[string]*domain.Calendar         // service_id -> Calendar
-	CalendarDates  map[string][]*domain.CalendarDate   // service_id -> []CalendarDate
+	StopSchedules   map[string][]domain.StopTimeCompact // stop_id -> compact stop times
+	StopLines       map[string][]*domain.StopLine       // stop_id -> []StopLine
+	RouteStops      map[string][]*domain.Stop           // route_id -> []Stop (ordered)
+	RouteTripTimes  map[string][]*domain.TripTimeEntry  // route_id -> []TripTimeEntry
+	Trips           []domain.TripMeta                   // indexed trip metadata
+	Calendars       map[string]*domain.Calendar         // service_id -> Calendar
+	CalendarDates   map[string][]*domain.CalendarDate   // service_id -> []CalendarDate
+	ShapeDirections map[string]int                      // shape_id -> direction_id
 
 	tripIndex map[string]uint32 // trip_id -> index in Trips (parse-only)
 }
@@ -46,18 +47,19 @@ func (p *Parser) Parse(reader *zip.Reader) (*ParseResult, error) {
 	p.logger.Info("starting GTFS parsing")
 
 	result := &ParseResult{
-		Routes:         make(map[string]*domain.Route),
-		Shapes:         make(map[string]*domain.Shape),
-		Stops:          make(map[string]*domain.Stop),
-		RouteShapes:    make(map[string][]string),
-		StopSchedules:  make(map[string][]domain.StopTimeCompact),
-		StopLines:      make(map[string][]*domain.StopLine),
-		RouteStops:     make(map[string][]*domain.Stop),
-		RouteTripTimes: make(map[string][]*domain.TripTimeEntry),
-		Trips:          make([]domain.TripMeta, 0, 300000),
-		Calendars:      make(map[string]*domain.Calendar),
-		CalendarDates:  make(map[string][]*domain.CalendarDate),
-		tripIndex:      make(map[string]uint32, 300000),
+		Routes:          make(map[string]*domain.Route),
+		Shapes:          make(map[string]*domain.Shape),
+		Stops:           make(map[string]*domain.Stop),
+		RouteShapes:     make(map[string][]string),
+		StopSchedules:   make(map[string][]domain.StopTimeCompact),
+		StopLines:       make(map[string][]*domain.StopLine),
+		RouteStops:      make(map[string][]*domain.Stop),
+		RouteTripTimes:  make(map[string][]*domain.TripTimeEntry),
+		Trips:           make([]domain.TripMeta, 0, 300000),
+		Calendars:       make(map[string]*domain.Calendar),
+		CalendarDates:   make(map[string][]*domain.CalendarDate),
+		ShapeDirections: make(map[string]int),
+		tripIndex:       make(map[string]uint32, 300000),
 	}
 
 	fileMap := make(map[string]*zip.File)
@@ -387,16 +389,24 @@ func (p *Parser) parseTrips(file *zip.File, result *ParseResult) error {
 		shapeID := getField(record, idx, "shape_id")
 		headsign := getField(record, idx, "trip_headsign")
 
+		directionID := 0
+		if v := getField(record, idx, "direction_id"); v != "" {
+			if parsed, err := strconv.Atoi(v); err == nil {
+				directionID = parsed
+			}
+		}
+
 		if tripID != "" && routeID != "" {
 			if _, exists := result.tripIndex[tripID]; !exists {
 				tripIdx := uint32(len(result.Trips))
 				result.tripIndex[tripID] = tripIdx
 				result.Trips = append(result.Trips, domain.TripMeta{
-					ID:        tripID,
-					RouteID:   routeID,
-					ServiceID: serviceID,
-					ShapeID:   shapeID,
-					Headsign:  headsign,
+					ID:          tripID,
+					RouteID:     routeID,
+					ServiceID:   serviceID,
+					ShapeID:     shapeID,
+					Headsign:    headsign,
+					DirectionID: directionID,
 				})
 			}
 		}
@@ -404,6 +414,8 @@ func (p *Parser) parseTrips(file *zip.File, result *ParseResult) error {
 		if routeID == "" || shapeID == "" {
 			continue
 		}
+
+		result.ShapeDirections[shapeID] = directionID
 
 		if seenRouteShapes[routeID] == nil {
 			seenRouteShapes[routeID] = make(map[string]bool)
@@ -729,6 +741,7 @@ func (p *Parser) buildTripTimeRanges(result *ParseResult) {
 		entry := &domain.TripTimeEntry{
 			ShapeID:      trip.ShapeID,
 			ServiceID:    trip.ServiceID,
+			DirectionID:  trip.DirectionID,
 			StartMinutes: minTime[idx],
 			EndMinutes:   maxTime[idx],
 		}

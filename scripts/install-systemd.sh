@@ -7,7 +7,7 @@ APP_DIR="${APP_DIR:-$HOME/wabus-backend}"
 ENV_FILE="${ENV_FILE:-$APP_DIR/.env}"
 BIN_PATH="${BIN_PATH:-$APP_DIR/bin/wabus-linux-arm64}"
 RUN_SCRIPT="${RUN_SCRIPT:-$APP_DIR/scripts/run-rpi.sh}"
-GTFS_CACHE_DIR="${GTFS_CACHE_DIR:-/tmp/wabus-gtfs-cache}"
+GTFS_CACHE_DIR="${GTFS_CACHE_DIR:-.cache/gtfs}"
 
 if [[ ! -f "$ENV_FILE" ]]; then
   echo "Error: env file not found: $ENV_FILE" >&2
@@ -31,14 +31,16 @@ echo "Installing systemd service: $SERVICE_FILE"
 sudo tee "$SERVICE_FILE" >/dev/null <<EOF
 [Unit]
 Description=WaBus backend
-After=network-online.target
-Wants=network-online.target
+After=network-online.target docker.service
+Wants=network-online.target docker.service
 
 [Service]
 Type=simple
 User=$APP_USER
 WorkingDirectory=$APP_DIR
 Environment=GTFS_CACHE_DIR=$GTFS_CACHE_DIR
+ExecStartPre=/usr/bin/docker start redis
+ExecStartPre=/bin/sh -c "until [ \"$(/usr/bin/docker exec redis redis-cli --raw ping 2>/dev/null)\" = \"PONG\" ]; do sleep 1; done"
 ExecStart=$RUN_SCRIPT $ENV_FILE $BIN_PATH
 Restart=always
 RestartSec=3

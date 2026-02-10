@@ -24,7 +24,7 @@ func DataFingerprint(data []byte) string {
 }
 
 func parsedCachePath(cacheDir, fingerprint string) string {
-	return filepath.Join(cacheDir, fmt.Sprintf("gtfs_parsed_%s.gob.gz", fingerprint))
+	return filepath.Join(cacheDir, fmt.Sprintf("gtfs_parsed_v2_%s.gob.gz", fingerprint))
 }
 
 func LoadParsedResult(cacheDir, fingerprint string) (*ParseResult, string, error) {

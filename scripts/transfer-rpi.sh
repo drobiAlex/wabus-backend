@@ -9,8 +9,8 @@ PI_HOST="${PI_HOST:-raspberrypi}"
 PI_PORT="${PI_PORT:-22}"
 REMOTE_DIR="${REMOTE_DIR:-/home/${PI_USER}/wabus-backend}"
 
-LOCAL_CACHE_DIR="${LOCAL_CACHE_DIR:-${GTFS_CACHE_DIR:-/tmp/wabus-gtfs-cache}}"
-REMOTE_CACHE_DIR="${REMOTE_CACHE_DIR:-/tmp/wabus-gtfs-cache}"
+LOCAL_CACHE_DIR="${LOCAL_CACHE_DIR:-${GTFS_CACHE_DIR:-.cache/gtfs}}"
+REMOTE_CACHE_DIR="${REMOTE_CACHE_DIR:-.cache/gtfs}"
 
 LOCAL_BIN="$ROOT_DIR/bin/wabus-linux-arm64"
 if [[ ! -f "$LOCAL_BIN" ]]; then

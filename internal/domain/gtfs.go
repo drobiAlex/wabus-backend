@@ -56,8 +56,9 @@ type ShapePoint struct {
 
 // Shape represents the geographic path of a route
 type Shape struct {
-	ID     string       `json:"id"`
-	Points []ShapePoint `json:"points"`
+	ID          string       `json:"id"`
+	Points      []ShapePoint `json:"points"`
+	DirectionID *int         `json:"direction_id,omitempty"`
 }
 
 // Stop represents a transit stop from GTFS
@@ -107,17 +108,19 @@ type CalendarDate struct {
 type TripTimeEntry struct {
 	ShapeID      string
 	ServiceID    string
+	DirectionID  int
 	StartMinutes int // minutes since midnight (GTFS format, can be >1440)
 	EndMinutes   int // minutes since midnight
 }
 
 // TripMeta stores compact trip metadata used when decoding stop schedules.
 type TripMeta struct {
-	ID        string
-	RouteID   string
-	ServiceID string
-	ShapeID   string
-	Headsign  string
+	ID          string
+	RouteID     string
+	ServiceID   string
+	ShapeID     string
+	Headsign    string
+	DirectionID int
 }
 
 // StopTimeCompact is a memory-efficient stop time representation.

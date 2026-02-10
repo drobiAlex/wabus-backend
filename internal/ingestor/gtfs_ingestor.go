@@ -86,7 +86,7 @@ func (i *GTFSIngestor) update(ctx context.Context) {
 
 	parseDuration := time.Since(parseStart)
 
-	i.store.UpdateAll(result.Routes, result.Shapes, result.Stops, result.RouteShapes, result.StopSchedules, result.StopLines, result.RouteStops, result.RouteTripTimes, result.Trips, result.Calendars, result.CalendarDates)
+	i.store.UpdateAll(result.Routes, result.Shapes, result.Stops, result.RouteShapes, result.StopSchedules, result.StopLines, result.RouteStops, result.RouteTripTimes, result.Trips, result.Calendars, result.CalendarDates, result.ShapeDirections)
 
 	if !i.IsReady() {
 		i.setReady(true)
